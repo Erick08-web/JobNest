@@ -848,6 +848,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                             <span class="badge ${pub.activa ? 'bg-success' : 'bg-secondary'}">${pub.activa ? 'Activa' : 'Inactiva'}</span>
                                             <div>
                                                 <button class="btn btn-primary btn-sm me-2" onclick="editarPublicacion(${pub.id})">Editar</button>
+                                                <button class="btn btn-outline-primary btn-sm me-2" onclick="document.querySelector('[data-section=portafolio]').click()">Portafolio</button>
                                                 <button class="btn btn-outline-${pub.activa ? 'danger' : 'success'} btn-sm" onclick="togglePublicacion(${pub.id}, ${pub.activa})">${pub.activa ? 'Desactivar' : 'Activar'}</button>
                                             </div>
                                         </div>
@@ -865,6 +866,155 @@ document.addEventListener('DOMContentLoaded', () => {
             showToast('Error de conexión al cargar las publicaciones.', 'error');
         }
     }
+
+
+    function renderPortafolioEmptyState(container) {
+        container.innerHTML = `
+            <div class="col-12">
+                <div class="portfolio-empty-state">
+                    <i class="bi bi-images"></i>
+                    <h5>Aún no has subido trabajos</h5>
+                    <p>Agrega fotos reales de tus servicios para que tus clientes puedan confiar antes de contratar.</p>
+                </div>
+            </div>
+        `;
+    }
+
+    function renderPortafolioCard(trabajo) {
+        return `
+            <div class="col-md-6 col-xl-4">
+                <article class="portfolio-card">
+                    <img src="${trabajo.imagen_url}" alt="${trabajo.titulo}" loading="lazy">
+                    <div class="portfolio-card-body">
+                        <span class="portfolio-chip">${trabajo.categoria || 'Servicio'}</span>
+                        <h6>${trabajo.titulo}</h6>
+                        <p>${trabajo.descripcion || 'Trabajo realizado para demostrar experiencia y calidad.'}</p>
+                        <small>${trabajo.publicacion_titulo || ''}</small>
+                        <button type="button" class="btn btn-outline-danger btn-sm w-100 mt-3" onclick="eliminarTrabajoPortafolio(${trabajo.id})">
+                            <i class="bi bi-trash me-1"></i>Eliminar
+                        </button>
+                    </div>
+                </article>
+            </div>
+        `;
+    }
+
+    async function loadPortafolio() {
+        if (!requireAuth()) return;
+        await loadOpcionesPortafolio();
+        const container = document.getElementById('portafolio-list');
+        if (!container) return;
+        try {
+            const response = await fetch('/mi_portafolio', { credentials: 'same-origin' });
+            const result = await response.json();
+            if (response.ok && result.success) {
+                if (!result.portafolio.length) {
+                    renderPortafolioEmptyState(container);
+                    return;
+                }
+                container.innerHTML = result.portafolio.map(renderPortafolioCard).join('');
+            } else {
+                showToast(result.message || 'Error al cargar el portafolio.', 'error');
+            }
+        } catch (error) {
+            console.error('Error al cargar portafolio:', error);
+            showToast('Error de conexión al cargar el portafolio.', 'error');
+        }
+    }
+
+    async function loadOpcionesPortafolio() {
+        const select = document.getElementById('portafolioPublicacion');
+        if (!select) return;
+        try {
+            const response = await fetch('/mis_publicaciones', { credentials: 'same-origin' });
+            const result = await response.json();
+            if (response.ok && result.success) {
+                select.innerHTML = '<option value="">Selecciona una publicación</option>' + result.publicaciones.map(pub => `
+                    <option value="${pub.id}">${pub.titulo} · ${pub.categoria}</option>
+                `).join('');
+            }
+        } catch (error) {
+            console.error('Error al cargar publicaciones para portafolio:', error);
+        }
+    }
+
+    async function obtenerPortafolioServicio(servicioId) {
+        try {
+            const response = await fetch(`/portafolio_publicacion/${servicioId}`, { credentials: 'same-origin' });
+            const result = await response.json();
+            if (!response.ok || !result.success || !result.portafolio.length) {
+                return `
+                    <div class="portfolio-service-empty">
+                        <i class="bi bi-images"></i>
+                        <span>Este prestador aún no ha subido fotos de trabajos para este oficio.</span>
+                    </div>
+                `;
+            }
+            return `
+                <div class="service-portfolio-grid">
+                    ${result.portafolio.map(item => `
+                        <article class="service-portfolio-item">
+                            <img src="${item.imagen_url}" alt="${item.titulo}" loading="lazy">
+                            <div>
+                                <h6>${item.titulo}</h6>
+                                <p>${item.descripcion || 'Trabajo relacionado con este servicio.'}</p>
+                            </div>
+                        </article>
+                    `).join('')}
+                </div>
+            `;
+        } catch (error) {
+            console.error('Error al cargar portafolio del servicio:', error);
+            return '<div class="portfolio-service-empty">No se pudo cargar el portafolio.</div>';
+        }
+    }
+
+    async function subirTrabajoPortafolio(event) {
+        event.preventDefault();
+        if (!requireAuth()) return;
+        const form = event.currentTarget;
+        const formData = new FormData(form);
+        try {
+            const response = await fetch('/subir_trabajo_portafolio', {
+                method: 'POST',
+                body: formData,
+                credentials: 'same-origin'
+            });
+            const result = await response.json();
+            if (response.ok && result.success) {
+                showToast(result.message, 'success');
+                form.reset();
+                loadPortafolio();
+            } else {
+                showToast(result.message || 'Error al subir el trabajo.', 'error');
+            }
+        } catch (error) {
+            console.error('Error al subir trabajo de portafolio:', error);
+            showToast('Error de conexión al subir el trabajo.', 'error');
+        }
+    }
+
+    window.eliminarTrabajoPortafolio = async function(trabajoId) {
+        if (!requireAuth()) return;
+        showConfirm('¿Quieres eliminar esta foto del portafolio?', async () => {
+            try {
+                const response = await fetch(`/eliminar_trabajo_portafolio/${trabajoId}`, {
+                    method: 'POST',
+                    credentials: 'same-origin'
+                });
+                const result = await response.json();
+                if (response.ok && result.success) {
+                    showToast(result.message, 'success');
+                    loadPortafolio();
+                } else {
+                    showToast(result.message || 'Error al eliminar el trabajo.', 'error');
+                }
+            } catch (error) {
+                console.error('Error al eliminar trabajo de portafolio:', error);
+                showToast('Error de conexión al eliminar el trabajo.', 'error');
+            }
+        });
+    };
 
     function loadEstadisticasPrestador() {
         if (!requireAuth()) return;
@@ -957,6 +1107,13 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
+
+
+    const portafolioForm = document.getElementById('portafolioForm');
+    if (portafolioForm) {
+        portafolioForm.addEventListener('submit', subirTrabajoPortafolio);
+    }
+    document.getElementById('recargarPortafolioBtn')?.addEventListener('click', loadPortafolio);
 
     // ==================== FUNCIONALIDADES PARA CLIENTES ====================
     function loadClienteData() {
@@ -1096,6 +1253,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const result = await response.json();
             if (response.ok && result.success) {
                 const servicio = result.publicacion;
+                const portafolioHtml = await obtenerPortafolioServicio(servicioId);
                 const modalBody = document.getElementById('servicioModalBody');
                 const modalLabel = document.getElementById('servicioModalLabel');
                 if (modalBody && modalLabel) {
@@ -1105,6 +1263,8 @@ document.addEventListener('DOMContentLoaded', () => {
                             <div class="col-md-8">
                                 <h6>Descripción del servicio</h6>
                                 <p>${servicio.descripcion}</p>
+                                <h6 class="mt-4">Portafolio del oficio</h6>
+                                ${portafolioHtml}
                                 <h6 class="mt-4">Detalles</h6>
                                 <ul class="list-unstyled">
                                     <li><strong>Categoría:</strong> ${servicio.categoria}</li>
@@ -1333,6 +1493,7 @@ document.addEventListener('DOMContentLoaded', () => {
             case 'agenda-prestador': inicializarCalendario(); break;
             case 'publicar-oficio': break;
             case 'mis-publicaciones': loadMisPublicaciones(); break;
+            case 'portafolio': loadPortafolio(); break;
             case 'solicitudes': loadSolicitudesPrestador(); break;
             case 'buscar-servicios':
                 const savedQuery = sessionStorage.getItem('busquedaQuery');

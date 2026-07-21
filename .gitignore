@@ -33,3 +33,21 @@ static/uploads/*
 *.log
 *.tmp
 *.bak
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# Herramientas locales
+.expo/
+.claude/
+.vercel/
+AGENTS.md
+CLAUDE.md
+
+# Backups locales de Codex
+*.bak_*

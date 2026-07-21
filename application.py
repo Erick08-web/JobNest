@@ -1,12 +1,28 @@
 import os
+
+
+def cargar_env_local(ruta='.env'):
+    if not os.path.exists(ruta):
+        return
+    with open(ruta, encoding='utf-8') as archivo:
+        for linea in archivo:
+            linea = linea.strip()
+            if not linea or linea.startswith('#') or '=' not in linea:
+                continue
+            clave, valor = linea.split('=', 1)
+            os.environ.setdefault(clave.strip(), valor.strip().strip('"').strip("'"))
+
+cargar_env_local()
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, send_from_directory, abort
 import pyodbc
-from werkzeug.security import generate_password_hash, check_password_hash
+from passlib.hash import argon2
+from werkzeug.security import check_password_hash as verificar_hash_legacy
 from email_validator import validate_email, EmailNotValidError
 from datetime import datetime, timedelta
 import re
 from flask_mail import Mail, Message
 from werkzeug.utils import secure_filename
+from cryptography.fernet import Fernet, InvalidToken
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY')
@@ -33,6 +49,63 @@ DB_CONFIG = {
     'trust_server_certificate': os.environ.get('DB_TRUST_SERVER_CERTIFICATE', 'yes'),
     'timeout': os.environ.get('DB_TIMEOUT', '30')
 }
+
+
+ALLOWED_IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
+PORTAFOLIO_UPLOAD_FOLDER = os.path.join(app.root_path, 'static', 'uploads', 'portafolio')
+ENCRYPTION_PREFIX = 'enc:v1:'
+
+
+def hash_password(password):
+    return argon2.hash(password)
+
+
+def verificar_password(hash_guardado, password):
+    if not hash_guardado:
+        return False
+    if hash_guardado.startswith('$argon2'):
+        return argon2.verify(password, hash_guardado)
+    return verificar_hash_legacy(hash_guardado, password)
+
+
+def password_necesita_rehash(hash_guardado):
+    return not hash_guardado or not hash_guardado.startswith('$argon2')
+
+
+def obtener_cipher():
+    key = os.environ.get('DATA_ENCRYPTION_KEY')
+    if not key:
+        raise RuntimeError('Falta la variable de entorno DATA_ENCRYPTION_KEY')
+    return Fernet(key.encode())
+
+
+def cifrar_dato(valor):
+    if valor is None:
+        return None
+    texto = str(valor)
+    if not texto:
+        return None
+    if texto.startswith(ENCRYPTION_PREFIX):
+        return texto
+    token = obtener_cipher().encrypt(texto.encode('utf-8')).decode('utf-8')
+    return f'{ENCRYPTION_PREFIX}{token}'
+
+
+def descifrar_dato(valor):
+    if valor is None:
+        return None
+    texto = str(valor)
+    if not texto.startswith(ENCRYPTION_PREFIX):
+        return texto
+    token = texto[len(ENCRYPTION_PREFIX):]
+    try:
+        return obtener_cipher().decrypt(token.encode('utf-8')).decode('utf-8')
+    except (InvalidToken, RuntimeError):
+        return ''
+
+
+def archivo_imagen_permitido(nombre_archivo):
+    return '.' in nombre_archivo and nombre_archivo.rsplit('.', 1)[1].lower() in ALLOWED_IMAGE_EXTENSIONS
 
 def get_db_connection():
     missing = [
@@ -246,7 +319,7 @@ def registrar_usuario_web():
 
             conn.autocommit = False
             try:
-                hashed_password = generate_password_hash(password)
+                hashed_password = hash_password(password)
 
                 sql_query_usuario = "INSERT INTO Usuarios (Email, PasswordHash, Activo, CreadoEn, UltimoLogin) VALUES (?, ?, ?, ?, ?)"
                 current_time = datetime.now()
@@ -256,7 +329,7 @@ def registrar_usuario_web():
                 user_id = cursor.fetchone()[0]
 
                 sql_query_persona = "INSERT INTO Personas (UsuarioId, Nombre, ApellidoP, ApellidoM, Telefono) VALUES (?, ?, ?, ?, ?)"
-                cursor.execute(sql_query_persona, (user_id, first_name, last_name_p, last_name_m, candidate_phone if candidate_phone else None))
+                cursor.execute(sql_query_persona, (user_id, first_name, last_name_p, last_name_m, cifrar_dato(candidate_phone) if candidate_phone else None))
 
                 if user_type == 'prestador':
                     sql_query_prestador = "INSERT INTO Prestadores (UsuarioId, Verificado, RatingPromedio, TotalResenas) VALUES (?, ?, ?, ?)"
@@ -324,9 +397,15 @@ def login_usuario():
                 if not activo:
                     return jsonify({'success': False, 'message': 'Tu cuenta está desactivada. Contacta al administrador.'}), 401
 
-                if check_password_hash(contrasena_hasheada_db, contrasena_ingresada):
+                if verificar_password(contrasena_hasheada_db, contrasena_ingresada):
                     print("Inicio de sesión exitoso.")
-                    cursor.execute("UPDATE Usuarios SET UltimoLogin = ? WHERE id = ?", (datetime.now(), user_id))
+                    if password_necesita_rehash(contrasena_hasheada_db):
+                        cursor.execute(
+                            "UPDATE Usuarios SET PasswordHash = ?, UltimoLogin = ? WHERE id = ?",
+                            (hash_password(contrasena_ingresada), datetime.now(), user_id)
+                        )
+                    else:
+                        cursor.execute("UPDATE Usuarios SET UltimoLogin = ? WHERE id = ?", (datetime.now(), user_id))
                     conn.commit()
 
                     cursor.execute("SELECT Nombre, ApellidoP, ApellidoM, Telefono, FotoPerfil FROM Personas WHERE UsuarioId = ?", (user_id,))
@@ -347,7 +426,7 @@ def login_usuario():
                         session['nombres'] = persona_data[0]
                         session['apellido_paterno'] = persona_data[1]
                         session['apellido_materno'] = persona_data[2]
-                        session['telefono'] = persona_data[3]
+                        session['telefono'] = descifrar_dato(persona_data[3])
                         session['foto_perfil'] = persona_data[4]
                     else:
                         session['nombres'] = 'Usuario'
@@ -404,8 +483,11 @@ def get_user_data():
             'nombres': user_data[1],
             'apellido_paterno': user_data[2],
             'apellido_materno': user_data[3],
-            'telefono': user_data[4],
+            'telefono': descifrar_dato(user_data[4]),
             'foto_perfil': user_data[5],
+            'tipo_usuario': session.get('tipo_usuario', 'cliente'),
+            'fecha_registro': session.get('fecha_registro'),
+            'ultima_sesion': session.get('ultima_sesion'),
             'tipo_usuario': session.get('tipo_usuario', 'cliente')
         }
         return jsonify(response_data), 200
@@ -530,7 +612,7 @@ def actualizar_perfil():
             SET Nombre = ?, ApellidoP = ?, ApellidoM = ?, Telefono = ?
             WHERE UsuarioId = ?
         """
-        cursor.execute(sql_update_persona, (nombres, apellido_paterno, apellido_materno, telefono if telefono else None, user_id))
+        cursor.execute(sql_update_persona, (nombres, apellido_paterno, apellido_materno, cifrar_dato(telefono) if telefono else None, user_id))
 
         session['nombres'] = nombres
         session['apellido_paterno'] = apellido_paterno
@@ -585,8 +667,8 @@ def cambiar_contrasena():
         cursor.execute("SELECT PasswordHash FROM Usuarios WHERE id = ?", (user_id,))
         resultado = cursor.fetchone()
 
-        if resultado and check_password_hash(resultado[0], contrasena_actual):
-            nueva_contrasena_hasheada = generate_password_hash(nueva_contrasena)
+        if resultado and verificar_password(resultado[0], contrasena_actual):
+            nueva_contrasena_hasheada = hash_password(nueva_contrasena)
             sql_update_contrasena = "UPDATE Usuarios SET PasswordHash = ? WHERE id = ?"
             cursor.execute(sql_update_contrasena, (nueva_contrasena_hasheada, user_id))
             conn.commit()
@@ -782,7 +864,7 @@ def publicaciones_activas():
                 'tipo_precio': pub[10],
                 'fecha_creacion': pub[11].strftime('%d/%m/%Y') if pub[11] else '',
                 'prestador_nombre': f"{pub[12]} {pub[13]} {pub[14]}",
-                'prestador_telefono': pub[15],
+                'prestador_telefono': descifrar_dato(pub[15]),
                 'prestador_foto': pub[16],
                 'prestador_email': pub[17]
             })
@@ -877,7 +959,7 @@ def detalles_publicacion(publicacion_id):
             'tipo_precio': publicacion[10],
             'fecha_creacion': publicacion[11].strftime('%d/%m/%Y') if publicacion[11] else '',
             'prestador_nombre': f"{publicacion[12]} {publicacion[13]} {publicacion[14]}",
-            'prestador_telefono': publicacion[15],
+            'prestador_telefono': descifrar_dato(publicacion[15]),
             'prestador_email': publicacion[16],
             'prestador_id': publicacion[17]
         }
@@ -971,7 +1053,7 @@ def buscar_publicaciones():
                 'tipo_precio': pub[10],
                 'fecha_creacion': pub[11].strftime('%d/%m/%Y') if pub[11] else '',
                 'prestador_nombre': f"{pub[12]} {pub[13]} {pub[14]}",
-                'prestador_telefono': pub[15],
+                'prestador_telefono': descifrar_dato(pub[15]),
                 'prestador_foto': pub[16],
                 'prestador_email': pub[17]
             })
@@ -985,6 +1067,181 @@ def buscar_publicaciones():
     except Exception as e:
         print(f"Error inesperado al buscar publicaciones: {e}")
         return jsonify({'success': False, 'message': f"Error inesperado: {e}"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/mi_portafolio', methods=['GET'])
+def mi_portafolio():
+    if 'usuario_autenticado' not in session or not session['usuario_autenticado']:
+        return jsonify({'success': False, 'message': 'No autenticado'}), 401
+
+    user_id = session.get('user_id')
+    tipo_usuario = session.get('tipo_usuario')
+    if tipo_usuario != 'prestador':
+        return jsonify({'success': False, 'message': 'Solo los prestadores pueden consultar su portafolio.'}), 403
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT pt.id, pt.PublicacionId, p.Titulo, p.Categoria, pt.Titulo, pt.Descripcion,
+                   pt.ImagenUrl, pt.CreadoEn
+            FROM PortafolioTrabajos pt
+            INNER JOIN Publicaciones p ON pt.PublicacionId = p.id
+            WHERE pt.PrestadorId = ? AND pt.Activo = 1
+            ORDER BY pt.CreadoEn DESC
+        """, (user_id,))
+        trabajos = cursor.fetchall()
+        portafolio = []
+        for trabajo in trabajos:
+            portafolio.append({
+                'id': trabajo[0],
+                'publicacion_id': trabajo[1],
+                'publicacion_titulo': trabajo[2],
+                'categoria': trabajo[3],
+                'titulo': trabajo[4],
+                'descripcion': trabajo[5],
+                'imagen_url': trabajo[6],
+                'creado_en': trabajo[7].strftime('%d/%m/%Y') if trabajo[7] else ''
+            })
+        return jsonify({'success': True, 'portafolio': portafolio}), 200
+    except pyodbc.Error as ex:
+        print(f"Error de base de datos al obtener portafolio: {ex}")
+        return jsonify({'success': False, 'message': f'Error de base de datos: {ex}'}), 500
+    except Exception as e:
+        print(f"Error inesperado al obtener portafolio: {e}")
+        return jsonify({'success': False, 'message': f'Error inesperado: {e}'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/portafolio_publicacion/<int:publicacion_id>', methods=['GET'])
+def portafolio_publicacion(publicacion_id):
+    if 'usuario_autenticado' not in session or not session['usuario_autenticado']:
+        return jsonify({'success': False, 'message': 'No autenticado'}), 401
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, Titulo, Descripcion, ImagenUrl, CreadoEn
+            FROM PortafolioTrabajos
+            WHERE PublicacionId = ? AND Activo = 1
+            ORDER BY CreadoEn DESC
+        """, (publicacion_id,))
+        trabajos = cursor.fetchall()
+        portafolio = []
+        for trabajo in trabajos:
+            portafolio.append({
+                'id': trabajo[0],
+                'titulo': trabajo[1],
+                'descripcion': trabajo[2],
+                'imagen_url': trabajo[3],
+                'creado_en': trabajo[4].strftime('%d/%m/%Y') if trabajo[4] else ''
+            })
+        return jsonify({'success': True, 'portafolio': portafolio}), 200
+    except pyodbc.Error as ex:
+        print(f"Error de base de datos al obtener portafolio de publicación: {ex}")
+        return jsonify({'success': False, 'message': f'Error de base de datos: {ex}'}), 500
+    except Exception as e:
+        print(f"Error inesperado al obtener portafolio de publicación: {e}")
+        return jsonify({'success': False, 'message': f'Error inesperado: {e}'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/subir_trabajo_portafolio', methods=['POST'])
+def subir_trabajo_portafolio():
+    if 'usuario_autenticado' not in session or not session['usuario_autenticado']:
+        return jsonify({'success': False, 'message': 'No autenticado'}), 401
+
+    user_id = session.get('user_id')
+    tipo_usuario = session.get('tipo_usuario')
+    if tipo_usuario != 'prestador':
+        return jsonify({'success': False, 'message': 'Solo los prestadores pueden subir trabajos.'}), 403
+
+    publicacion_id = request.form.get('publicacion_id', '').strip()
+    titulo = request.form.get('titulo', '').strip()
+    descripcion = request.form.get('descripcion', '').strip()
+    foto = request.files.get('foto')
+
+    if not publicacion_id:
+        return jsonify({'success': False, 'message': 'Selecciona el oficio relacionado.'}), 400
+    if not titulo:
+        return jsonify({'success': False, 'message': 'El título del trabajo es obligatorio.'}), 400
+    if not foto or foto.filename == '':
+        return jsonify({'success': False, 'message': 'Selecciona una foto del trabajo.'}), 400
+    if not archivo_imagen_permitido(foto.filename):
+        return jsonify({'success': False, 'message': 'Solo se permiten imágenes PNG, JPG, JPEG o WEBP.'}), 400
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM Publicaciones WHERE id = ? AND UsuarioId = ?", (publicacion_id, user_id))
+        publicacion = cursor.fetchone()
+        if not publicacion:
+            return jsonify({'success': False, 'message': 'La publicación no existe o no te pertenece.'}), 404
+
+        os.makedirs(PORTAFOLIO_UPLOAD_FOLDER, exist_ok=True)
+        nombre_seguro = secure_filename(foto.filename)
+        base, extension = os.path.splitext(nombre_seguro)
+        base = base[:70] or 'trabajo'
+        nombre_final = f"{user_id}_{publicacion_id}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{base}{extension.lower()}"
+        ruta_archivo = os.path.join(PORTAFOLIO_UPLOAD_FOLDER, nombre_final)
+        foto.save(ruta_archivo)
+        ruta_relativa = f"/static/uploads/portafolio/{nombre_final}"
+
+        cursor.execute("""
+            INSERT INTO PortafolioTrabajos (PublicacionId, PrestadorId, Titulo, Descripcion, ImagenUrl)
+            VALUES (?, ?, ?, ?, ?)
+        """, (publicacion_id, user_id, titulo, descripcion, ruta_relativa))
+        conn.commit()
+        return jsonify({'success': True, 'message': 'Trabajo agregado al portafolio.', 'imagen_url': ruta_relativa}), 200
+    except pyodbc.Error as ex:
+        if os.path.exists(locals().get('ruta_archivo', '')):
+            os.remove(ruta_archivo)
+        print(f"Error de base de datos al subir trabajo de portafolio: {ex}")
+        return jsonify({'success': False, 'message': f'Error de base de datos: {ex}'}), 500
+    except Exception as e:
+        if os.path.exists(locals().get('ruta_archivo', '')):
+            os.remove(ruta_archivo)
+        print(f"Error inesperado al subir trabajo de portafolio: {e}")
+        return jsonify({'success': False, 'message': f'Error inesperado: {e}'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/eliminar_trabajo_portafolio/<int:trabajo_id>', methods=['POST'])
+def eliminar_trabajo_portafolio(trabajo_id):
+    if 'usuario_autenticado' not in session or not session['usuario_autenticado']:
+        return jsonify({'success': False, 'message': 'No autenticado'}), 401
+
+    user_id = session.get('user_id')
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM PortafolioTrabajos WHERE id = ? AND PrestadorId = ? AND Activo = 1", (trabajo_id, user_id))
+        trabajo = cursor.fetchone()
+        if not trabajo:
+            return jsonify({'success': False, 'message': 'Trabajo no encontrado o sin permisos.'}), 404
+        cursor.execute("UPDATE PortafolioTrabajos SET Activo = 0 WHERE id = ?", (trabajo_id,))
+        conn.commit()
+        return jsonify({'success': True, 'message': 'Trabajo eliminado del portafolio.'}), 200
+    except pyodbc.Error as ex:
+        print(f"Error de base de datos al eliminar trabajo de portafolio: {ex}")
+        return jsonify({'success': False, 'message': f'Error de base de datos: {ex}'}), 500
+    except Exception as e:
+        print(f"Error inesperado al eliminar trabajo de portafolio: {e}")
+        return jsonify({'success': False, 'message': f'Error inesperado: {e}'}), 500
     finally:
         if conn:
             conn.close()
@@ -1024,7 +1281,7 @@ def enviar_solicitud():
             INSERT INTO SolicitudesServicios (PublicacionId, ClienteId, PrestadorId, FechaServicio, HoraServicio, MensajeCliente, Estado)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """
-        cursor.execute(sql_insert, (publicacion_id, user_id, prestador_id, fecha_servicio, hora_servicio, mensaje, 'pendiente'))
+        cursor.execute(sql_insert, (publicacion_id, user_id, prestador_id, fecha_servicio, hora_servicio, cifrar_dato(mensaje) if mensaje else None, 'pendiente'))
         conn.commit()
 
         # --- Enviar correo al prestador ---
@@ -1096,13 +1353,13 @@ def mis_solicitudes_prestador():
                 'fecha_solicitud': sol[1].strftime('%d/%m/%Y %H:%M') if sol[1] else '',
                 'fecha_servicio': sol[2].strftime('%d/%m/%Y') if sol[2] else '',
                 'hora_servicio': sol[3].strftime('%H:%M') if sol[3] else '',
-                'mensaje_cliente': sol[4],
+                'mensaje_cliente': descifrar_dato(sol[4]),
                 'estado': sol[5],
                 'titulo_publicacion': sol[6],
                 'precio': float(sol[7]) if sol[7] else None,
                 'categoria': sol[8],
                 'cliente_nombre': f"{sol[9]} {sol[10]} {sol[11]}",
-                'cliente_telefono': sol[12],
+                'cliente_telefono': descifrar_dato(sol[12]),
                 'cliente_foto': sol[13],
                 'cliente_email': sol[14]
             })
@@ -1153,13 +1410,13 @@ def mis_solicitudes_cliente():
                 'fecha_solicitud': sol[1].strftime('%d/%m/%Y %H:%M') if sol[1] else '',
                 'fecha_servicio': sol[2].strftime('%d/%m/%Y') if sol[2] else '',
                 'hora_servicio': sol[3].strftime('%H:%M') if sol[3] else '',
-                'mensaje_cliente': sol[4],
+                'mensaje_cliente': descifrar_dato(sol[4]),
                 'estado': sol[5],
                 'titulo_publicacion': sol[6],
                 'precio': float(sol[7]) if sol[7] else None,
                 'categoria': sol[8],
                 'prestador_nombre': f"{sol[9]} {sol[10]} {sol[11]}",
-                'prestador_telefono': sol[12],
+                'prestador_telefono': descifrar_dato(sol[12]),
                 'prestador_foto': sol[13],
                 'prestador_email': sol[14]
             })
@@ -1251,7 +1508,7 @@ def obtener_eventos_agenda():
             hora_servicio_raw = evento[3]
             titulo_publicacion = evento[5]
             cliente_nombre = f"{evento[6]} {evento[7]} {evento[8]}"
-            mensaje_cliente = evento[9]
+            mensaje_cliente = descifrar_dato(evento[9])
             precio_raw = evento[10]
 
             if isinstance(fecha_servicio_raw, str):
@@ -1623,7 +1880,7 @@ def mis_conversaciones():
                 'otro_usuario_id': row[3],
                 'otro_nombre': f"{row[4]} {row[5]} {row[6]}",
                 'otro_foto': row[7],
-                'ultimo_mensaje': row[8],
+                'ultimo_mensaje': descifrar_dato(row[8]),
                 'ultimo_enviado': row[9].strftime('%d/%m/%Y %H:%M') if row[9] else ''
             })
         return jsonify({'success': True, 'conversaciones': conversaciones}), 200
@@ -1671,7 +1928,7 @@ def obtener_mensajes(hilo_id):
             mensajes.append({
                 'id': row[0],
                 'emisor_id': row[1],
-                'cuerpo': row[2],
+                'cuerpo': descifrar_dato(row[2]),
                 'enviado_en': row[3].strftime('%d/%m/%Y %H:%M') if row[3] else '',
                 'emisor_nombre': f"{row[4]} {row[5]} {row[6]}".strip() if row[4] else 'Usuario'
             })
@@ -1734,7 +1991,7 @@ def enviar_mensaje():
         cursor.execute("""
             INSERT INTO Mensajes (HiloId, EmisorId, Cuerpo, EnviadoEn)
             VALUES (?, ?, ?, GETDATE())
-        """, (hilo_id, user_id, mensaje))
+        """, (hilo_id, user_id, cifrar_dato(mensaje)))
         conn.commit()
 
         # --- Enviar correo al destinatario ---
@@ -1901,7 +2158,7 @@ def procesar_pago():
             cursor.execute("""
                 INSERT INTO Pagos (SolicitudServicioId, Monto, Moneda, MetodoId, EstatusId, Procesador, ProcesadorChargeId, PagadoEn, CreadoEn)
                 VALUES (?, ?, 'MXN', ?, ?, 'Simulación', ?, GETDATE(), GETDATE())
-            """, (solicitud_id, monto, metodo_id, estatus_completado, transaccion_id))
+            """, (solicitud_id, monto, metodo_id, estatus_completado, cifrar_dato(transaccion_id)))
             conn.commit()
             return jsonify({'success': True, 'message': 'Pago procesado exitosamente', 'transaccion_id': transaccion_id}), 200
 
@@ -1993,7 +2250,7 @@ def actualizar_estado_solicitud(solicitud_id):
                 cursor.execute("""
                     INSERT INTO Mensajes (HiloId, EmisorId, Cuerpo, EnviadoEn)
                     VALUES (?, NULL, ?, GETDATE())
-                """, (hilo_id, mensaje_bienvenida))
+                """, (hilo_id, cifrar_dato(mensaje_bienvenida)))
                 print(f"💬 Mensaje automático insertado en el hilo {hilo_id}")
 
         conn.commit()

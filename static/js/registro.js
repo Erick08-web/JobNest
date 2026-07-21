@@ -75,6 +75,39 @@ document.addEventListener('DOMContentLoaded', function() {
     customAlertClose.addEventListener('click', hideCustomAlert);
 
     /*********** funciones de utilidad ***********/
+    function getVisibleErrors() {
+        return Array.from(document.querySelectorAll('.error-message'))
+            .map(error => error.textContent.trim())
+            .filter(Boolean);
+    }
+
+    function focusFirstInvalidField() {
+        const firstInvalid = registerForm.querySelector('.is-invalid');
+        if (firstInvalid) {
+            firstInvalid.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            if (typeof firstInvalid.focus === 'function') {
+                setTimeout(() => firstInvalid.focus(), 300);
+            }
+        }
+    }
+
+    function showValidationSummary(fallbackMessage) {
+        const errors = getVisibleErrors();
+        const message = errors.length
+            ? `Revisa lo siguiente:\n- ${errors.slice(0, 4).join('\n- ')}`
+            : fallbackMessage;
+        showCustomAlert(message);
+        focusFirstInvalidField();
+    }
+
+    function getErrorElementByField(field) {
+        const errorIds = {
+            termsCheck: 'termsError',
+            userType: 'termsError'
+        };
+        return document.getElementById(errorIds[field] || `${field}Error`);
+    }
+
     function showError(element, message) {
         element.textContent = message;
         element.style.display = 'block';
@@ -305,6 +338,7 @@ document.addEventListener('DOMContentLoaded', function() {
             data[key] = typeof value === 'string' ? value.trim() : value;
         });
         data.userType = tipoSeleccionado;
+        data.termsCheck = termsCheck.checked ? 'on' : '';
 
         data.firstName = capitalizeFirstLetter(data.firstName);
         data.lastNameP = capitalizeFirstLetter(data.lastNameP);
@@ -344,7 +378,7 @@ document.addEventListener('DOMContentLoaded', function() {
         if (data.candidatePhone !== '' && !isValidPhoneNumber(candidatePhoneInput, candidatePhoneError, 'número de teléfono')) isValid = false;
 
         if (!isValid) {
-            showCustomAlert('Por favor, corrige los errores en el formulario antes de continuar.');
+            showValidationSummary('Por favor, corrige los errores en el formulario antes de continuar.');
             return;
         }
 
@@ -361,18 +395,18 @@ document.addEventListener('DOMContentLoaded', function() {
             if (response.ok) {
                 showCustomAlert('¡Registro exitoso! Ahora puedes iniciar sesión.');
                 setTimeout(() => {
-                    window.location.href = 'login.html';
+                    window.location.href = '/iniciar_sesion';
                 }, 1500);
             } else {
                 hideLoader();
                 if (result.errors) {
                     for (const field in result.errors) {
-                        const errorElement = document.getElementById(`${field}Error`);
+                        const errorElement = getErrorElementByField(field);
                         if (errorElement) {
                             showError(errorElement, result.errors[field]);
                         }
                     }
-                    showCustomAlert('Por favor, corrige los errores indicados.');
+                    showValidationSummary('Por favor, corrige los errores indicados.');
                 } else if (result.message) {
                     showCustomAlert(`Error: ${result.message}`);
                 } else {

@@ -172,6 +172,12 @@
                     </a>
                 </li>
                 <li class="nav-item">
+                    <a class="nav-link" href="#" data-section="portafolio">
+                        <i class="bi bi-images"></i>
+                        <span>Portafolio</span>
+                    </a>
+                </li>
+                <li class="nav-item">
                     <a class="nav-link" href="#" data-section="historial-trabajos">
                         <i class="bi bi-clock-history"></i>
                         <span>Historial de trabajos</span>
@@ -476,6 +482,75 @@
 
                     <div class="row g-4" id="publicaciones-list">
                         <!-- Las publicaciones se cargarán dinámicamente -->
+                    </div>
+                </div>
+            </div>
+        </section>
+
+
+        <section id="portafolio-section" class="content-section d-none">
+            <div class="glass-section-content">
+                <div class="container-fluid">
+                    <div class="section-heading-row">
+                        <div>
+                            <span class="section-kicker">Confianza visual</span>
+                            <h2 class="mb-2 titulo-dashboard">Portafolio de trabajos</h2>
+                            <p>Sube fotos reales relacionadas con cada oficio para que los clientes conozcan la calidad de tu trabajo.</p>
+                        </div>
+                    </div>
+
+                    <div class="row g-4 align-items-stretch">
+                        <div class="col-lg-5">
+                            <div class="card glass-card h-100 portfolio-uploader-card">
+                                <div class="card-body">
+                                    <div class="icon-badge mb-3"><i class="bi bi-cloud-arrow-up"></i></div>
+                                    <h5 class="card-title">Agregar trabajo realizado</h5>
+                                    <p class="text-muted">Cada foto se guarda ligada a una publicación, así el cliente solo verá trabajos del oficio que está revisando.</p>
+                                    <form id="portafolioForm" enctype="multipart/form-data">
+                                        <div class="mb-3">
+                                            <label for="portafolioPublicacion" class="form-label">Oficio relacionado *</label>
+                                            <select class="form-select glass-input" id="portafolioPublicacion" name="publicacion_id" required>
+                                                <option value="">Selecciona una publicación</option>
+                                            </select>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="portafolioTitulo" class="form-label">Título del trabajo *</label>
+                                            <input type="text" class="form-control glass-input" id="portafolioTitulo" name="titulo" required placeholder="Ej: Instalación eléctrica residencial">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label for="portafolioDescripcion" class="form-label">Descripción breve</label>
+                                            <textarea class="form-control glass-input" id="portafolioDescripcion" name="descripcion" rows="3" placeholder="Describe qué hiciste, materiales o resultado final."></textarea>
+                                        </div>
+                                        <div class="mb-4">
+                                            <label for="portafolioFoto" class="form-label">Foto del trabajo *</label>
+                                            <input type="file" class="form-control glass-input" id="portafolioFoto" name="foto" accept="image/png,image/jpeg,image/jpg,image/webp" required>
+                                            <small class="text-muted">Formatos permitidos: JPG, PNG o WEBP.</small>
+                                        </div>
+                                        <button type="submit" class="btn btn-primary btn-lg w-100">
+                                            <i class="bi bi-plus-lg me-2"></i>Agregar al portafolio
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-lg-7">
+                            <div class="card glass-card h-100">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-start gap-3 mb-3 flex-wrap">
+                                        <div>
+                                            <h5 class="card-title mb-1">Galería publicada</h5>
+                                            <p class="text-muted mb-0">Tus trabajos aparecerán en los detalles del servicio para aumentar confianza.</p>
+                                        </div>
+                                        <button class="btn btn-outline-primary btn-sm" id="recargarPortafolioBtn" type="button">
+                                            <i class="bi bi-arrow-clockwise me-1"></i>Actualizar
+                                        </button>
+                                    </div>
+                                    <div class="row g-3" id="portafolio-list">
+                                        <div class="col-12 text-center text-muted py-5">Cargando portafolio...</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
