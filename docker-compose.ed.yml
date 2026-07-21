@@ -1,0 +1,53 @@
+services:
+  jobnest-public:
+    build:
+      context: .
+      dockerfile: Dockerfile.ed
+    container_name: jobnest-public
+    ports:
+      - "5000:5000"
+    environment:
+      FLASK_SECRET_KEY: ${FLASK_SECRET_KEY}
+      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY}
+      DB_DRIVER: "{FreeTDS}"
+      DB_SERVER: jobnest-private-db,1433
+      DB_NAME: ${DB_NAME:-JobNest}
+      DB_USER: ${DB_USER:-SA}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_ENCRYPT: "no"
+      DB_TRUST_SERVER_CERTIFICATE: "yes"
+      DB_TIMEOUT: "30"
+      MAIL_SERVER: ${MAIL_SERVER:-smtp.gmail.com}
+      MAIL_PORT: ${MAIL_PORT:-465}
+      MAIL_USE_TLS: ${MAIL_USE_TLS:-false}
+      MAIL_USE_SSL: ${MAIL_USE_SSL:-true}
+      EMAIL_USER: ${EMAIL_USER:-}
+      EMAIL_PASSWORD: ${EMAIL_PASSWORD:-}
+    depends_on:
+      - jobnest-private-db
+    networks:
+      - frontnet
+      - backnet
+
+  jobnest-private-db:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64
+    container_name: jobnest-private-db
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${DB_PASSWORD}
+      MSSQL_PID: "Developer"
+    expose:
+      - "1433"
+    volumes:
+      - jobnest_sql_data:/var/opt/mssql
+    networks:
+      - backnet
+
+networks:
+  frontnet:
+  backnet:
+    internal: true
+
+volumes:
+  jobnest_sql_data:
