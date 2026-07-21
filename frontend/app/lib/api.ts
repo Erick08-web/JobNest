@@ -279,7 +279,7 @@ export async function uploadPortfolioWork(payload: { publicacion_id: string; tit
   formData.append("publicacion_id", payload.publicacion_id);
   formData.append("titulo", payload.titulo);
   formData.append("descripcion", payload.descripcion);
-  formData.append("imagen", payload.imagen);
+  formData.append("foto", payload.imagen);
   return backendFetch("/subir_trabajo_portafolio", { method: "POST", body: formData });
 }
 

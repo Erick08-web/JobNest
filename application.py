@@ -253,7 +253,7 @@ def registrar_usuario_web():
         email = data.get('email', '').strip()
         password = data.get('password', '').strip()
         confirm_password = data.get('confirmPassword', '').strip()
-        user_type = data.get('userType', '').strip()
+        user_type = data.get('userType', '').strip().lower()
         terms_checked = data.get('termsCheck') == 'on'
 
         if not email:
@@ -822,9 +822,6 @@ def mis_publicaciones():
 
 @app.route('/publicaciones_activas', methods=['GET'])
 def publicaciones_activas():
-    if 'usuario_autenticado' not in session or not session['usuario_autenticado']:
-        return jsonify({'success': False, 'message': 'No autenticado'}), 401
-
     conn = None
     try:
         conn = get_db_connection()
@@ -917,9 +914,6 @@ def toggle_publicacion(publicacion_id):
 # ==================== DETALLES, BÚSQUEDA Y SOLICITUDES ====================
 @app.route('/detalles_publicacion/<int:publicacion_id>', methods=['GET'])
 def detalles_publicacion(publicacion_id):
-    if 'usuario_autenticado' not in session or not session['usuario_autenticado']:
-        return jsonify({'success': False, 'message': 'No autenticado'}), 401
-
     conn = None
     try:
         conn = get_db_connection()
@@ -978,9 +972,6 @@ def detalles_publicacion(publicacion_id):
 
 @app.route('/buscar_publicaciones', methods=['GET'])
 def buscar_publicaciones():
-    if 'usuario_autenticado' not in session or not session['usuario_autenticado']:
-        return jsonify({'success': False, 'message': 'No autenticado'}), 401
-
     query = request.args.get('q', '').strip()
     categoria = request.args.get('categoria', '').strip()
     precio_max = request.args.get('precio_max', '').strip()
@@ -1121,9 +1112,6 @@ def mi_portafolio():
 
 @app.route('/portafolio_publicacion/<int:publicacion_id>', methods=['GET'])
 def portafolio_publicacion(publicacion_id):
-    if 'usuario_autenticado' not in session or not session['usuario_autenticado']:
-        return jsonify({'success': False, 'message': 'No autenticado'}), 401
-
     conn = None
     try:
         conn = get_db_connection()

@@ -76,7 +76,7 @@ type RequestItem = {
 
 type ApiOptions = RequestInit & { skipJson?: boolean };
 
-const DEFAULT_API_URL = 'http://192.168.0.108:5000';
+const DEFAULT_API_URL = 'http://192.168.0.108:5001';
 const PRIMARY = '#2563eb';
 const INK = '#101828';
 const MUTED = '#667085';
@@ -160,6 +160,14 @@ function money(value?: number | string) {
   return String(value);
 }
 
+function normalizeUserType(value?: string): UserType {
+  return value?.toLowerCase() === 'prestador' ? 'Prestador' : 'Cliente';
+}
+
+function userTypeForApi(value: UserType) {
+  return value === 'Prestador' ? 'prestador' : 'cliente';
+}
+
 export default function App() {
   const [screen, setScreen] = useState<Screen>('inicio');
   const [previousScreen, setPreviousScreen] = useState<Screen>('inicio');
@@ -194,7 +202,7 @@ export default function App() {
   const [postDescription, setPostDescription] = useState('');
   const [postSkills, setPostSkills] = useState('');
 
-  const currentUserType = (user?.tipo_usuario ?? registerType) as UserType;
+  const currentUserType = normalizeUserType(user?.tipo_usuario ?? registerType);
   const isLoggedIn = Boolean(user);
 
   const filteredPublications = useMemo(() => {
@@ -306,7 +314,7 @@ export default function App() {
       await apiFetch('/login', { method: 'POST', body: form });
       const nextUser = await refreshUser();
       await loadPublications();
-      setScreen(nextUser?.tipo_usuario === 'Prestador' ? 'profesional' : 'cliente');
+      setScreen(normalizeUserType(nextUser?.tipo_usuario) === 'Prestador' ? 'profesional' : 'cliente');
     } catch (error) {
       Alert.alert('No se pudo iniciar sesion', error instanceof Error ? error.message : 'Revisa tu API y tus datos.');
     } finally {
@@ -334,7 +342,7 @@ export default function App() {
           email: registerEmail,
           password: registerPassword,
           confirmPassword: registerPassword,
-          userType: registerType,
+          userType: userTypeForApi(registerType),
           termsCheck: 'on',
         }),
       });
@@ -387,11 +395,10 @@ export default function App() {
       form.append('categoria', postCategory);
       form.append('salario', postPrice);
       form.append('ubicacion', postLocation);
-      form.append('experiencia', 'Experiencia verificada por JobNest');
+      form.append('experiencia', '1');
       form.append('habilidades', postSkills);
       form.append('disponibilidad', 'Disponible esta semana');
-      form.append('tipo_precio', 'por hora');
-      form.append('incluye_materiales', 'false');
+      form.append('tipo_precio', 'hora');
       await apiFetch('/crear_publicacion', { method: 'POST', body: form });
       Alert.alert('Servicio publicado', 'Tu servicio ya puede aparecer para clientes.');
       setPostTitle('');
@@ -843,7 +850,7 @@ function SettingsScreen({
       <Field label="URL del backend Flask" value={apiUrl} onChangeText={setApiUrl} autoCapitalize="none" />
       <View style={styles.tipBox}>
         <Text style={styles.tipTitle}>Ejemplo</Text>
-        <Text style={styles.tipText}>http://192.168.0.108:5000</Text>
+        <Text style={styles.tipText}>http://192.168.0.108:5001</Text>
         <Text style={styles.tipText}>El backend debe correr con host 0.0.0.0 para que tu telefono lo vea.</Text>
       </View>
       <View style={styles.tipBoxMuted}>
