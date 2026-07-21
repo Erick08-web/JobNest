@@ -10,10 +10,12 @@
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
+    "qrcode-terminal": "0.11.0",
     "typescript": "~6.0.3"
   },
   "scripts": {
-    "start": "expo start",
+    "start": "node scripts/start-with-qr.cjs",
+    "start:expo": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web"

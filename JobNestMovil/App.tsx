@@ -3,6 +3,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  NativeModules,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -76,7 +77,7 @@ type RequestItem = {
 
 type ApiOptions = RequestInit & { skipJson?: boolean };
 
-const DEFAULT_API_URL = 'http://192.168.0.108:5001';
+const DEFAULT_API_URL = getDefaultApiUrl();
 const PRIMARY = '#2563eb';
 const INK = '#101828';
 const MUTED = '#667085';
@@ -85,6 +86,28 @@ const SOFT = '#f5f7fb';
 const BORDER = '#e4e7ec';
 
 const categories = ['Diseño', 'Arquitectura', 'Electricidad', 'Programación', 'Fotografía', 'Legal'];
+
+function getDefaultApiUrl() {
+  const scriptUrl = NativeModules.SourceCode?.scriptURL;
+
+  if (typeof scriptUrl === 'string') {
+    try {
+      const { hostname } = new URL(scriptUrl);
+
+      if (hostname) {
+        return `http://${hostname}:5001`;
+      }
+    } catch {
+      const host = scriptUrl.match(/\/\/([^/:]+)/)?.[1];
+
+      if (host) {
+        return `http://${host}:5001`;
+      }
+    }
+  }
+
+  return 'http://localhost:5001';
+}
 
 const mockProfessionals: Publication[] = [
   {
@@ -849,8 +872,8 @@ function SettingsScreen({
     <AuthCard title="Conexion con API" subtitle="En Expo Go usa la IP local de tu Mac, no localhost.">
       <Field label="URL del backend Flask" value={apiUrl} onChangeText={setApiUrl} autoCapitalize="none" />
       <View style={styles.tipBox}>
-        <Text style={styles.tipTitle}>Ejemplo</Text>
-        <Text style={styles.tipText}>http://192.168.0.108:5001</Text>
+        <Text style={styles.tipTitle}>Detectada</Text>
+        <Text style={styles.tipText}>{DEFAULT_API_URL}</Text>
         <Text style={styles.tipText}>El backend debe correr con host 0.0.0.0 para que tu telefono lo vea.</Text>
       </View>
       <View style={styles.tipBoxMuted}>
