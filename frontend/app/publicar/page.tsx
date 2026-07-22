@@ -161,7 +161,7 @@ export default function PublishPage() {
 
           <section className="myPublicationsCard">
             <span className="sectionKicker"><CheckCircle2 size={16} /> Tus publicaciones</span>
-            {publications.slice(0, 6).map((item) => <article className="publicationManageItem" key={item.id}><div><strong>{item.titulo}</strong><span>{item.categoria} · {item.activa ? "Activa" : "Inactiva"}</span></div><div><button type="button" onClick={() => startEdit(item)}>Editar</button><button type="button" onClick={() => void handleToggle(item.id)}>{item.activa ? "Desactivar" : "Activar"}</button></div></article>)}
+            {publications.slice(0, 6).map((item) => <article className="publicationManageItem" key={item.id}><div><strong>{item.titulo}</strong><span>{item.categoria} · {item.estado_revision ?? "aprobada"} · {item.activa ? "Activa" : "Inactiva"}</span>{item.comentario_revision ? <small>{item.comentario_revision}</small> : null}</div><div><button type="button" onClick={() => startEdit(item)}>Editar</button><button type="button" onClick={() => void handleToggle(item.id)}>{item.activa ? "Desactivar" : "Activar"}</button></div></article>)}
             {!publications.length ? <p>Aún no tienes publicaciones.</p> : null}
           </section>
         </aside>

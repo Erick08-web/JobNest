@@ -275,6 +275,73 @@ def fmt_date(value):
     return value.strftime('%d/%m/%Y') if value else ''
 
 
+def ensure_control_schema(cursor):
+    cursor.execute("""
+        IF COL_LENGTH('Publicaciones', 'EstadoRevision') IS NULL
+            ALTER TABLE Publicaciones ADD EstadoRevision NVARCHAR(30) NOT NULL
+                CONSTRAINT DF_Publicaciones_EstadoRevision DEFAULT 'aprobada'
+    """)
+    cursor.execute("""
+        IF COL_LENGTH('Publicaciones', 'RevisadoPor') IS NULL
+            ALTER TABLE Publicaciones ADD RevisadoPor INT NULL
+    """)
+    cursor.execute("""
+        IF COL_LENGTH('Publicaciones', 'FechaRevision') IS NULL
+            ALTER TABLE Publicaciones ADD FechaRevision DATETIME NULL
+    """)
+    cursor.execute("""
+        IF COL_LENGTH('Publicaciones', 'ComentarioRevision') IS NULL
+            ALTER TABLE Publicaciones ADD ComentarioRevision NVARCHAR(500) NULL
+    """)
+    cursor.execute("""
+        IF COL_LENGTH('Publicaciones', 'FechaActualizacion') IS NULL
+            ALTER TABLE Publicaciones ADD FechaActualizacion DATETIME NULL
+    """)
+    cursor.execute("""
+        IF OBJECT_ID('Quejas', 'U') IS NULL
+            CREATE TABLE Quejas (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                UsuarioId INT NOT NULL,
+                TipoUsuario NVARCHAR(30) NOT NULL,
+                SolicitudServicioId INT NULL,
+                PublicacionId INT NULL,
+                Motivo NVARCHAR(120) NOT NULL,
+                Descripcion NVARCHAR(MAX) NOT NULL,
+                Estado NVARCHAR(30) NOT NULL DEFAULT 'pendiente',
+                RespuestaAdmin NVARCHAR(MAX) NULL,
+                AtendidaPor INT NULL,
+                CreadoEn DATETIME NOT NULL DEFAULT GETDATE(),
+                ActualizadoEn DATETIME NULL,
+                FOREIGN KEY (UsuarioId) REFERENCES Usuarios(id)
+            )
+    """)
+    cursor.execute("""
+        IF OBJECT_ID('BitacoraAdmin', 'U') IS NULL
+            CREATE TABLE BitacoraAdmin (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                UsuarioId INT NULL,
+                ActorId INT NULL,
+                TipoEvento NVARCHAR(80) NOT NULL,
+                Entidad NVARCHAR(80) NOT NULL,
+                EntidadId INT NULL,
+                Detalle NVARCHAR(MAX) NULL,
+                CreadoEn DATETIME NOT NULL DEFAULT GETDATE()
+            )
+    """)
+    cursor.execute("""
+        UPDATE Publicaciones
+        SET EstadoRevision = CASE WHEN Activa = 1 THEN 'aprobada' ELSE 'pendiente' END
+        WHERE EstadoRevision IS NULL OR EstadoRevision = ''
+    """)
+
+
+def audit_event(cursor, tipo_evento, entidad, entidad_id=None, detalle=None, usuario_id=None, actor_id=None):
+    cursor.execute("""
+        INSERT INTO BitacoraAdmin (UsuarioId, ActorId, TipoEvento, Entidad, EntidadId, Detalle)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (usuario_id, actor_id, tipo_evento, entidad, entidad_id, detalle))
+
+
 # ==================== RUTAS PRINCIPALES ====================
 @app.route('/')
 def index():
@@ -513,6 +580,8 @@ def get_user_data():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        ensure_control_schema(cursor)
+        ensure_control_schema(cursor)
         cursor.execute("""
             SELECT u.Email, p.Nombre, p.ApellidoP, p.ApellidoM, p.Telefono, p.FotoPerfil
             FROM Usuarios u
@@ -621,6 +690,7 @@ def actualizar_perfil():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        ensure_control_schema(cursor)
 
         nombres = request.form.get('nombres', '').strip()
         apellido_paterno = request.form.get('apellido_paterno', '').strip()
@@ -658,6 +728,8 @@ def actualizar_perfil():
             WHERE UsuarioId = ?
         """
         cursor.execute(sql_update_persona, (nombres, apellido_paterno, apellido_materno, cifrar_dato(telefono) if telefono else None, user_id))
+        audit_event(cursor, 'perfil_actualizado', 'Usuarios', user_id,
+                    'El usuario actualizó sus datos de perfil.', usuario_id=user_id, actor_id=user_id)
 
         session['nombres'] = nombres
         session['apellido_paterno'] = apellido_paterno
@@ -709,6 +781,7 @@ def cambiar_contrasena():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        ensure_control_schema(cursor)
         cursor.execute("SELECT PasswordHash FROM Usuarios WHERE id = ?", (user_id,))
         resultado = cursor.fetchone()
 
@@ -784,13 +857,19 @@ def crear_publicacion():
 
         sql_insert = """
             INSERT INTO Publicaciones (UsuarioId, Titulo, Descripcion, Categoria, Precio, Ubicacion,
-                                       Experiencia, Habilidades, Disponibilidad, IncluyeMateriales, TipoPrecio)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                       Experiencia, Habilidades, Disponibilidad, IncluyeMateriales, TipoPrecio,
+                                       Activa, EstadoRevision, ComentarioRevision)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pendiente', NULL)
         """
         cursor.execute(sql_insert, (user_id, titulo, descripcion, categoria, precio_decimal, ubicacion,
                                     experiencia_int, habilidades, disponibilidad, incluye_materiales, tipo_precio))
+        cursor.execute("SELECT SCOPE_IDENTITY()")
+        nueva_publicacion_id = int(cursor.fetchone()[0])
+        audit_event(cursor, 'publicacion_creada_pendiente', 'Publicaciones', nueva_publicacion_id,
+                    f"Publicación creada por prestador y enviada a revisión: {titulo}",
+                    usuario_id=user_id, actor_id=user_id)
         conn.commit()
-        return jsonify({'success': True, 'message': 'Publicación creada exitosamente.'}), 200
+        return jsonify({'success': True, 'message': 'Publicación enviada a revisión del administrador. Aparecerá en marketplace cuando sea aprobada.'}), 200
 
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
@@ -815,11 +894,13 @@ def mis_publicaciones():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        ensure_control_schema(cursor)
 
         if tipo_usuario == 'prestador':
             cursor.execute("""
                 SELECT id, Titulo, Descripcion, Categoria, Precio, Ubicacion, Experiencia,
-                       Habilidades, Disponibilidad, IncluyeMateriales, TipoPrecio, FechaCreacion, Activa
+                       Habilidades, Disponibilidad, IncluyeMateriales, TipoPrecio, FechaCreacion, Activa,
+                       EstadoRevision, ComentarioRevision, FechaRevision, FechaActualizacion
                 FROM Publicaciones
                 WHERE UsuarioId = ?
                 ORDER BY FechaCreacion DESC
@@ -827,9 +908,10 @@ def mis_publicaciones():
         else:
             cursor.execute("""
                 SELECT id, Titulo, Descripcion, Categoria, Precio, Ubicacion, Experiencia,
-                       Habilidades, Disponibilidad, IncluyeMateriales, TipoPrecio, FechaCreacion, Activa
+                       Habilidades, Disponibilidad, IncluyeMateriales, TipoPrecio, FechaCreacion, Activa,
+                       EstadoRevision, ComentarioRevision, FechaRevision, FechaActualizacion
                 FROM Publicaciones
-                WHERE Activa = 1
+                WHERE Activa = 1 AND EstadoRevision = 'aprobada'
                 ORDER BY FechaCreacion DESC
             """)
 
@@ -849,7 +931,11 @@ def mis_publicaciones():
                 'incluye_materiales': bool(pub[9]),
                 'tipo_precio': pub[10],
                 'fecha_creacion': pub[11].strftime('%d/%m/%Y %H:%M') if pub[11] else '',
-                'activa': bool(pub[12])
+                'activa': bool(pub[12]),
+                'estado_revision': pub[13],
+                'comentario_revision': pub[14] or '',
+                'fecha_revision': fmt_datetime(pub[15]),
+                'fecha_actualizacion': fmt_datetime(pub[16])
             })
 
         return jsonify({'success': True, 'publicaciones': publicaciones_list}), 200
@@ -871,6 +957,7 @@ def publicaciones_activas():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        ensure_control_schema(cursor)
         cursor.execute("""
             SELECT p.id, p.Titulo, p.Descripcion, p.Categoria, p.Precio, p.Ubicacion,
                    p.Experiencia, p.Habilidades, p.Disponibilidad, p.IncluyeMateriales,
@@ -880,7 +967,7 @@ def publicaciones_activas():
             FROM Publicaciones p
             INNER JOIN Usuarios u ON p.UsuarioId = u.id
             INNER JOIN Personas per ON u.id = per.UsuarioId
-            WHERE p.Activa = 1
+            WHERE p.Activa = 1 AND p.EstadoRevision = 'aprobada'
             ORDER BY p.FechaCreacion DESC
         """)
         publicaciones = cursor.fetchall()
@@ -934,13 +1021,19 @@ def toggle_publicacion(publicacion_id):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT Activa FROM Publicaciones WHERE id = ? AND UsuarioId = ?", (publicacion_id, user_id))
+        ensure_control_schema(cursor)
+        cursor.execute("SELECT Activa, EstadoRevision FROM Publicaciones WHERE id = ? AND UsuarioId = ?", (publicacion_id, user_id))
         publicacion = cursor.fetchone()
         if not publicacion:
             return jsonify({'success': False, 'message': 'Publicación no encontrada o no tienes permisos.'}), 404
 
         nuevo_estado = not publicacion[0]
+        if nuevo_estado and publicacion[1] != 'aprobada':
+            return jsonify({'success': False, 'message': 'La publicación debe ser aprobada por el administrador antes de activarse.'}), 400
         cursor.execute("UPDATE Publicaciones SET Activa = ? WHERE id = ?", (nuevo_estado, publicacion_id))
+        audit_event(cursor, 'publicacion_estado_prestador', 'Publicaciones', publicacion_id,
+                    f"Prestador {'activó' if nuevo_estado else 'desactivó'} la publicación.",
+                    usuario_id=user_id, actor_id=user_id)
         conn.commit()
         estado_texto = "activada" if nuevo_estado else "desactivada"
         return jsonify({'success': True, 'message': f'Publicación {estado_texto} exitosamente.'}), 200
@@ -972,7 +1065,7 @@ def detalles_publicacion(publicacion_id):
             FROM Publicaciones p
             INNER JOIN Usuarios u ON p.UsuarioId = u.id
             INNER JOIN Personas per ON u.id = per.UsuarioId
-            WHERE p.id = ? AND p.Activa = 1
+            WHERE p.id = ? AND p.Activa = 1 AND p.EstadoRevision = 'aprobada'
         """, (publicacion_id,))
         publicacion = cursor.fetchone()
         if not publicacion:
@@ -1026,6 +1119,7 @@ def buscar_publicaciones():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        ensure_control_schema(cursor)
         sql = """
             SELECT p.id, p.Titulo, p.Descripcion, p.Categoria, p.Precio, p.Ubicacion,
                    p.Experiencia, p.Habilidades, p.Disponibilidad, p.IncluyeMateriales,
@@ -1035,7 +1129,7 @@ def buscar_publicaciones():
             FROM Publicaciones p
             INNER JOIN Usuarios u ON p.UsuarioId = u.id
             INNER JOIN Personas per ON u.id = per.UsuarioId
-            WHERE p.Activa = 1
+            WHERE p.Activa = 1 AND p.EstadoRevision = 'aprobada'
         """
         params = []
 
@@ -1217,6 +1311,7 @@ def subir_trabajo_portafolio():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        ensure_control_schema(cursor)
         cursor.execute("SELECT id FROM Publicaciones WHERE id = ? AND UsuarioId = ?", (publicacion_id, user_id))
         publicacion = cursor.fetchone()
         if not publicacion:
@@ -1304,7 +1399,7 @@ def enviar_solicitud():
         if not fecha_servicio:
             return jsonify({'success': False, 'message': 'La fecha del servicio es obligatoria.'}), 400
 
-        cursor.execute("SELECT UsuarioId FROM Publicaciones WHERE id = ? AND Activa = 1", (publicacion_id,))
+        cursor.execute("SELECT UsuarioId FROM Publicaciones WHERE id = ? AND Activa = 1 AND EstadoRevision = 'aprobada'", (publicacion_id,))
         publicacion = cursor.fetchone()
         if not publicacion:
             return jsonify({'success': False, 'message': 'Publicación no encontrada o no activa.'}), 404
@@ -1705,14 +1800,19 @@ def editar_publicacion(publicacion_id):
         sql_update = """
             UPDATE Publicaciones
             SET Titulo = ?, Descripcion = ?, Categoria = ?, Precio = ?, Ubicacion = ?,
-                Experiencia = ?, Habilidades = ?, Disponibilidad = ?, IncluyeMateriales = ?, TipoPrecio = ?
+                Experiencia = ?, Habilidades = ?, Disponibilidad = ?, IncluyeMateriales = ?, TipoPrecio = ?,
+                Activa = 0, EstadoRevision = 'pendiente', RevisadoPor = NULL, FechaRevision = NULL,
+                ComentarioRevision = NULL, FechaActualizacion = GETDATE()
             WHERE id = ? AND UsuarioId = ?
         """
         cursor.execute(sql_update, (titulo, descripcion, categoria, precio_decimal, ubicacion,
                                     experiencia_int, habilidades, disponibilidad, incluye_materiales, tipo_precio,
                                     publicacion_id, user_id))
+        audit_event(cursor, 'publicacion_editada_pendiente', 'Publicaciones', publicacion_id,
+                    f"Publicación editada y enviada nuevamente a revisión: {titulo}",
+                    usuario_id=user_id, actor_id=user_id)
         conn.commit()
-        return jsonify({'success': True, 'message': 'Publicación actualizada exitosamente.'}), 200
+        return jsonify({'success': True, 'message': 'Publicación actualizada y enviada nuevamente a revisión del administrador.'}), 200
 
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
@@ -2338,6 +2438,7 @@ def admin_resumen():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        ensure_control_schema(cursor)
 
         cursor.execute("SELECT COUNT(*) FROM Usuarios")
         total_usuarios = cursor.fetchone()[0]
@@ -2356,8 +2457,14 @@ def admin_resumen():
         publicaciones_activas = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM Publicaciones WHERE Activa = 0")
         publicaciones_inactivas = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM Publicaciones WHERE EstadoRevision = 'pendiente'")
+        publicaciones_pendientes = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM Publicaciones WHERE EstadoRevision = 'rechazada'")
+        publicaciones_rechazadas = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM SolicitudesServicios")
         solicitudes = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM Quejas WHERE Estado = 'pendiente'")
+        quejas_pendientes = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM Mensajes")
         mensajes = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM Resenas")
@@ -2384,7 +2491,10 @@ def admin_resumen():
                 'administradores': administradores,
                 'publicaciones_activas': publicaciones_activas,
                 'publicaciones_inactivas': publicaciones_inactivas,
+                'publicaciones_pendientes': publicaciones_pendientes,
+                'publicaciones_rechazadas': publicaciones_rechazadas,
                 'solicitudes': solicitudes,
+                'quejas_pendientes': quejas_pendientes,
                 'mensajes': mensajes,
                 'resenas': resenas,
                 'pagos_total': pagos_total,
@@ -2410,6 +2520,7 @@ def admin_usuarios():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        ensure_control_schema(cursor)
         cursor.execute("""
             SELECT TOP 40
                 u.id, u.Email, u.Activo, u.CreadoEn, u.UltimoLogin,
@@ -2459,14 +2570,17 @@ def admin_publicaciones():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        ensure_control_schema(cursor)
         cursor.execute("""
             SELECT TOP 40
                 pub.id, pub.Titulo, pub.Categoria, pub.Precio, pub.Activa, pub.FechaCreacion,
-                per.Nombre, per.ApellidoP, per.ApellidoM, u.Email
+                per.Nombre, per.ApellidoP, per.ApellidoM, u.Email,
+                pub.EstadoRevision, pub.ComentarioRevision, pub.FechaRevision, pub.Descripcion,
+                pub.Ubicacion, pub.Experiencia, pub.Habilidades, pub.Disponibilidad, pub.IncluyeMateriales
             FROM Publicaciones pub
             INNER JOIN Usuarios u ON pub.UsuarioId = u.id
             LEFT JOIN Personas per ON u.id = per.UsuarioId
-            ORDER BY pub.FechaCreacion DESC
+            ORDER BY CASE WHEN pub.EstadoRevision = 'pendiente' THEN 0 ELSE 1 END, pub.FechaCreacion DESC
         """)
         publicaciones = [{
             'id': row[0],
@@ -2476,7 +2590,16 @@ def admin_publicaciones():
             'activa': bool(row[4]),
             'fecha_creacion': fmt_datetime(row[5]),
             'prestador_nombre': f"{row[6] or ''} {row[7] or ''} {row[8] or ''}".strip() or row[9],
-            'prestador_email': row[9]
+            'prestador_email': row[9],
+            'estado_revision': row[10],
+            'comentario_revision': row[11] or '',
+            'fecha_revision': fmt_datetime(row[12]),
+            'descripcion': row[13] or '',
+            'ubicacion': row[14] or '',
+            'experiencia': row[15],
+            'habilidades': row[16] or '',
+            'disponibilidad': row[17] or '',
+            'incluye_materiales': bool(row[18])
         } for row in cursor.fetchall()]
 
         return jsonify({'success': True, 'publicaciones': publicaciones}), 200
@@ -2499,6 +2622,7 @@ def admin_solicitudes():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        ensure_control_schema(cursor)
         cursor.execute("""
             SELECT TOP 40
                 s.id, s.FechaSolicitud, s.FechaServicio, s.Estado, p.Titulo, p.Precio,
@@ -2544,6 +2668,7 @@ def admin_toggle_usuario(user_id):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        ensure_control_schema(cursor)
         cursor.execute("SELECT Activo FROM Usuarios WHERE id = ?", (user_id,))
         usuario = cursor.fetchone()
         if not usuario:
@@ -2551,6 +2676,9 @@ def admin_toggle_usuario(user_id):
 
         nuevo_estado = 0 if usuario[0] else 1
         cursor.execute("UPDATE Usuarios SET Activo = ? WHERE id = ?", (nuevo_estado, user_id))
+        audit_event(cursor, 'usuario_estado_admin', 'Usuarios', user_id,
+                    f"Admin {'activó' if nuevo_estado else 'desactivó'} la cuenta.",
+                    usuario_id=user_id, actor_id=session.get('user_id'))
         conn.commit()
         return jsonify({'success': True, 'message': f"Usuario {'activado' if nuevo_estado else 'desactivado'} correctamente."}), 200
 
@@ -2572,18 +2700,233 @@ def admin_toggle_publicacion(publicacion_id):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT Activa FROM Publicaciones WHERE id = ?", (publicacion_id,))
+        ensure_control_schema(cursor)
+        cursor.execute("SELECT Activa, EstadoRevision FROM Publicaciones WHERE id = ?", (publicacion_id,))
         publicacion = cursor.fetchone()
         if not publicacion:
             return jsonify({'success': False, 'message': 'Publicación no encontrada.'}), 404
 
         nuevo_estado = 0 if publicacion[0] else 1
+        if nuevo_estado and publicacion[1] != 'aprobada':
+            return jsonify({'success': False, 'message': 'Solo puedes activar publicaciones aprobadas.'}), 400
         cursor.execute("UPDATE Publicaciones SET Activa = ? WHERE id = ?", (nuevo_estado, publicacion_id))
+        audit_event(cursor, 'publicacion_estado_admin', 'Publicaciones', publicacion_id,
+                    f"Admin {'activó' if nuevo_estado else 'desactivó'} la publicación.",
+                    actor_id=session.get('user_id'))
         conn.commit()
         return jsonify({'success': True, 'message': f"Publicación {'activada' if nuevo_estado else 'desactivada'} correctamente."}), 200
 
     except Exception as e:
         print(f"Error en admin_toggle_publicacion: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/admin/publicaciones/<int:publicacion_id>/revision', methods=['POST'])
+def admin_revisar_publicacion(publicacion_id):
+    unauthorized = require_admin_session()
+    if unauthorized:
+        return unauthorized
+
+    data = request.get_json(silent=True) or {}
+    estado = (data.get('estado') or '').strip().lower()
+    comentario = (data.get('comentario') or '').strip()
+
+    if estado not in ('aprobada', 'rechazada'):
+        return jsonify({'success': False, 'message': 'Estado de revisión no válido.'}), 400
+    if estado == 'rechazada' and not comentario:
+        return jsonify({'success': False, 'message': 'Agrega un motivo para rechazar la publicación.'}), 400
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_control_schema(cursor)
+        cursor.execute("SELECT UsuarioId, Titulo FROM Publicaciones WHERE id = ?", (publicacion_id,))
+        publicacion = cursor.fetchone()
+        if not publicacion:
+            return jsonify({'success': False, 'message': 'Publicación no encontrada.'}), 404
+
+        activa = 1 if estado == 'aprobada' else 0
+        cursor.execute("""
+            UPDATE Publicaciones
+            SET EstadoRevision = ?, Activa = ?, RevisadoPor = ?, FechaRevision = GETDATE(),
+                ComentarioRevision = ?, FechaActualizacion = GETDATE()
+            WHERE id = ?
+        """, (estado, activa, session.get('user_id'), comentario or None, publicacion_id))
+        audit_event(cursor, f'publicacion_{estado}', 'Publicaciones', publicacion_id,
+                    comentario or f"Publicación {estado} por administrador.",
+                    usuario_id=publicacion[0], actor_id=session.get('user_id'))
+        conn.commit()
+        return jsonify({'success': True, 'message': f"Publicación {estado} correctamente."}), 200
+
+    except Exception as e:
+        print(f"Error en admin_revisar_publicacion: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/quejas', methods=['POST'])
+def crear_queja():
+    if 'usuario_autenticado' not in session or not session['usuario_autenticado']:
+        return jsonify({'success': False, 'message': 'Inicia sesión para enviar una queja.'}), 401
+
+    data = request.get_json(silent=True) or {}
+    motivo = (data.get('motivo') or '').strip()
+    descripcion = (data.get('descripcion') or '').strip()
+    solicitud_id = data.get('solicitud_id')
+    publicacion_id = data.get('publicacion_id')
+
+    if not motivo:
+        return jsonify({'success': False, 'message': 'El motivo de la queja es obligatorio.'}), 400
+    if not descripcion or len(descripcion) < 10:
+        return jsonify({'success': False, 'message': 'Describe la queja con al menos 10 caracteres.'}), 400
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_control_schema(cursor)
+        cursor.execute("""
+            INSERT INTO Quejas (UsuarioId, TipoUsuario, SolicitudServicioId, PublicacionId, Motivo, Descripcion)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (session.get('user_id'), session.get('tipo_usuario', 'cliente'), solicitud_id, publicacion_id, motivo, descripcion))
+        cursor.execute("SELECT SCOPE_IDENTITY()")
+        queja_id = int(cursor.fetchone()[0])
+        audit_event(cursor, 'queja_creada', 'Quejas', queja_id, motivo,
+                    usuario_id=session.get('user_id'), actor_id=session.get('user_id'))
+        conn.commit()
+        return jsonify({'success': True, 'message': 'Tu queja fue enviada al administrador para seguimiento.'}), 200
+
+    except Exception as e:
+        print(f"Error en crear_queja: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/admin/quejas', methods=['GET'])
+def admin_quejas():
+    unauthorized = require_admin_session()
+    if unauthorized:
+        return unauthorized
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_control_schema(cursor)
+        cursor.execute("""
+            SELECT TOP 50 q.id, q.TipoUsuario, q.Motivo, q.Descripcion, q.Estado, q.CreadoEn,
+                   q.RespuestaAdmin, q.SolicitudServicioId, q.PublicacionId,
+                   u.Email, p.Nombre, p.ApellidoP, p.ApellidoM
+            FROM Quejas q
+            INNER JOIN Usuarios u ON q.UsuarioId = u.id
+            LEFT JOIN Personas p ON u.id = p.UsuarioId
+            ORDER BY CASE WHEN q.Estado = 'pendiente' THEN 0 ELSE 1 END, q.CreadoEn DESC
+        """)
+        quejas = [{
+            'id': row[0],
+            'tipo_usuario': row[1],
+            'motivo': row[2],
+            'descripcion': row[3],
+            'estado': row[4],
+            'creado_en': fmt_datetime(row[5]),
+            'respuesta_admin': row[6] or '',
+            'solicitud_id': row[7],
+            'publicacion_id': row[8],
+            'usuario_email': row[9],
+            'usuario_nombre': f"{row[10] or ''} {row[11] or ''} {row[12] or ''}".strip() or row[9]
+        } for row in cursor.fetchall()]
+        return jsonify({'success': True, 'quejas': quejas}), 200
+
+    except Exception as e:
+        print(f"Error en admin_quejas: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/admin/quejas/<int:queja_id>/resolver', methods=['POST'])
+def admin_resolver_queja(queja_id):
+    unauthorized = require_admin_session()
+    if unauthorized:
+        return unauthorized
+
+    data = request.get_json(silent=True) or {}
+    respuesta = (data.get('respuesta') or '').strip()
+    estado = (data.get('estado') or 'resuelta').strip().lower()
+    if estado not in ('en_revision', 'resuelta'):
+        return jsonify({'success': False, 'message': 'Estado de queja no válido.'}), 400
+    if estado == 'resuelta' and not respuesta:
+        return jsonify({'success': False, 'message': 'Agrega una respuesta antes de resolver la queja.'}), 400
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_control_schema(cursor)
+        cursor.execute("SELECT UsuarioId FROM Quejas WHERE id = ?", (queja_id,))
+        queja = cursor.fetchone()
+        if not queja:
+            return jsonify({'success': False, 'message': 'Queja no encontrada.'}), 404
+        cursor.execute("""
+            UPDATE Quejas
+            SET Estado = ?, RespuestaAdmin = ?, AtendidaPor = ?, ActualizadoEn = GETDATE()
+            WHERE id = ?
+        """, (estado, respuesta or None, session.get('user_id'), queja_id))
+        audit_event(cursor, 'queja_actualizada', 'Quejas', queja_id, respuesta or estado,
+                    usuario_id=queja[0], actor_id=session.get('user_id'))
+        conn.commit()
+        return jsonify({'success': True, 'message': 'Queja actualizada correctamente.'}), 200
+
+    except Exception as e:
+        print(f"Error en admin_resolver_queja: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/admin/bitacora', methods=['GET'])
+def admin_bitacora():
+    unauthorized = require_admin_session()
+    if unauthorized:
+        return unauthorized
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_control_schema(cursor)
+        cursor.execute("""
+            SELECT TOP 60 b.id, b.TipoEvento, b.Entidad, b.EntidadId, b.Detalle, b.CreadoEn,
+                   actor.Email, objetivo.Email
+            FROM BitacoraAdmin b
+            LEFT JOIN Usuarios actor ON b.ActorId = actor.id
+            LEFT JOIN Usuarios objetivo ON b.UsuarioId = objetivo.id
+            ORDER BY b.CreadoEn DESC
+        """)
+        eventos = [{
+            'id': row[0],
+            'tipo_evento': row[1],
+            'entidad': row[2],
+            'entidad_id': row[3],
+            'detalle': row[4] or '',
+            'creado_en': fmt_datetime(row[5]),
+            'actor_email': row[6] or '',
+            'usuario_email': row[7] or ''
+        } for row in cursor.fetchall()]
+        return jsonify({'success': True, 'eventos': eventos}), 200
+
+    except Exception as e:
+        print(f"Error en admin_bitacora: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
     finally:
         if conn:
@@ -2662,7 +3005,7 @@ def chatbot_mensaje():
         params = [calificacion_min]
 
         if categoria:
-            sql += " AND EXISTS (SELECT 1 FROM Publicaciones pub WHERE pub.UsuarioId = u.id AND pub.Categoria = ? AND pub.Activa = 1)"
+            sql += " AND EXISTS (SELECT 1 FROM Publicaciones pub WHERE pub.UsuarioId = u.id AND pub.Categoria = ? AND pub.Activa = 1 AND pub.EstadoRevision = 'aprobada')"
             params.append(categoria)
 
         if comentario_keyword:

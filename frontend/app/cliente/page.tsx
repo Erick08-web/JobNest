@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { CalendarCheck, CreditCard, Heart, MessageCircle, Search, ShieldCheck, Star } from "lucide-react";
 import { CompactDashboardRail } from "../components/SessionNav";
-import { fetchCurrentUser, listClientRequests, listConversations, listPendingPayments, type CurrentUser, type PendingPayment, type RequestItem } from "../lib/api";
+import { createComplaint, fetchCurrentUser, listClientRequests, listConversations, listPendingPayments, type CurrentUser, type PendingPayment, type RequestItem } from "../lib/api";
 
 function money(value: number) { return `$${value.toLocaleString("es-MX")}`; }
 
@@ -14,6 +14,8 @@ export default function ClientDashboardPage() {
   const [payments, setPayments] = useState<PendingPayment[]>([]);
   const [conversations, setConversations] = useState(0);
   const [message, setMessage] = useState("");
+  const [complaint, setComplaint] = useState({ motivo: "", descripcion: "", solicitud_id: "" });
+  const [sendingComplaint, setSendingComplaint] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -45,6 +47,25 @@ export default function ClientDashboardPage() {
   const totalPending = useMemo(() => payments.reduce((sum, payment) => sum + Number(payment.precio || 0), 0), [payments]);
   const activeRequests = requests.filter((item) => ["pendiente", "aceptada"].includes(item.estado));
 
+  const handleComplaint = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSendingComplaint(true);
+    setMessage("");
+    try {
+      const result = await createComplaint({
+        motivo: complaint.motivo,
+        descripcion: complaint.descripcion,
+        solicitud_id: complaint.solicitud_id ? Number(complaint.solicitud_id) : undefined
+      });
+      setMessage(result.message || "Queja enviada al administrador.");
+      setComplaint({ motivo: "", descripcion: "", solicitud_id: "" });
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "No fue posible enviar la queja.");
+    } finally {
+      setSendingComplaint(false);
+    }
+  };
+
   return (
     <main className="dashboardV2">
       <CompactDashboardRail role="cliente" />
@@ -67,6 +88,18 @@ export default function ClientDashboardPage() {
           <section className="dashPanel"><h2>Servicios solicitados</h2>{requests.slice(0, 5).map((item) => <div className="dashRow" key={item.id}><ShieldCheck /> <span>{item.titulo_publicacion} · {item.estado}</span><Link href="/solicitudes">Ver</Link></div>)}{!requests.length ? <p className="mutedPanelText">Aún no tienes solicitudes.</p> : null}</section>
           <section className="dashPanel"><h2>Pagos pendientes</h2>{payments.slice(0, 5).map((item) => <div className="dashRow" key={item.id}><Star /> <span>{item.titulo} · {money(item.precio)}</span><Link href="/pagos">Pagar</Link></div>)}{!payments.length ? <p className="mutedPanelText">No hay pagos pendientes.</p> : null}</section>
         </div>
+        <section className="dashPanel complaintPanel">
+          <h2>Enviar queja a administración</h2>
+          <form onSubmit={handleComplaint}>
+            <select value={complaint.solicitud_id} onChange={(event) => setComplaint({ ...complaint, solicitud_id: event.target.value })}>
+              <option value="">General</option>
+              {requests.map((item) => <option value={item.id} key={item.id}>{item.titulo_publicacion} · {item.estado}</option>)}
+            </select>
+            <input value={complaint.motivo} onChange={(event) => setComplaint({ ...complaint, motivo: event.target.value })} placeholder="Motivo" required />
+            <textarea value={complaint.descripcion} onChange={(event) => setComplaint({ ...complaint, descripcion: event.target.value })} placeholder="Describe qué ocurrió" required />
+            <button className="primaryButton" disabled={sendingComplaint}>{sendingComplaint ? "Enviando..." : "Enviar queja"}</button>
+          </form>
+        </section>
       </section>
     </main>
   );

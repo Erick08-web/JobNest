@@ -516,16 +516,22 @@ blockquote cite { color: var(--indigo); font-style: normal; font-weight: 900; }
 .adminTableRow strong, .adminPublicationCard strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .adminTableRow span, .adminPublicationCard span, .adminPublicationCard p { color: var(--muted); font-weight: 800; }
 .adminTableRow button, .adminPublicationCard button, .adminTablePanel > .sectionTitleRow a { display: inline-flex; min-height: 38px; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--line); border-radius: 999px; padding: 0 12px; background: white; color: var(--text); font-weight: 900; cursor: pointer; }
+.adminTableRow button.dangerButton, .adminPublicationCard button.dangerButton { color: #b42318; border-color: rgba(180,35,24,.18); background: #fff1f0; }
 .adminTableRow button:disabled, .adminPublicationCard button:disabled { opacity: .6; cursor: wait; }
 .adminTable.compact .adminTableRow, .requestRow { grid-template-columns: minmax(0,1fr) auto auto; }
+.adminTable.compact .complaintRow { grid-template-columns: minmax(0,1fr) auto auto auto; }
+.adminTable.compact .auditRow { grid-template-columns: minmax(0,1fr) auto; }
+.adminReviewNote { width: 100%; min-height: 82px; margin-bottom: 14px; border: 1px solid var(--line); border-radius: 18px; padding: 14px; outline: 0; resize: vertical; background: #f8faff; color: var(--text); font: inherit; font-weight: 750; }
 .adminStateList { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 .adminStateList span { border-radius: 999px; padding: 8px 11px; background: #eef3ff; color: #344054; font-weight: 850; text-transform: capitalize; }
 .adminPublicationGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .adminPublicationCard { display: grid; gap: 12px; padding: 16px; border: 1px solid rgba(16,24,40,.08); border-radius: 20px; background: #f8faff; }
+.adminPublicationCard small { color: #667085; font-weight: 800; line-height: 1.4; }
 .adminPublicationCard div:last-child { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.adminPublicationCard.reviewCard div:last-child { justify-content: flex-start; flex-wrap: wrap; }
 .adminAccessBox { min-height: 520px; }
 @media (max-width: 1050px) { .profileHero, .profileContent, .dashboardV2 { grid-template-columns:1fr; } .bookingSummary, .profileAside, .dashboardRail { position:static; height:auto; } .dashboardRail { flex-direction:row; overflow:auto; } .metricGrid, .portfolioGrid, .reviewList, .dashboardColumns { grid-template-columns:1fr; } }
-@media (max-width: 900px) { .adminStatusStrip, .adminPublicationGrid { grid-template-columns: 1fr; } .adminTableRow, .adminTable.compact .adminTableRow, .requestRow { grid-template-columns: 1fr; } .adminSearch input { width: 100%; } }
+@media (max-width: 900px) { .adminStatusStrip, .adminPublicationGrid { grid-template-columns: 1fr; } .adminTableRow, .adminTable.compact .adminTableRow, .requestRow, .adminTable.compact .complaintRow, .adminTable.compact .auditRow { grid-template-columns: 1fr; } .adminSearch input { width: 100%; } }
 @media (max-width: 700px) { .profileSignals { grid-template-columns:1fr; } .profileNav { align-items:flex-start; flex-direction:column; } .profileHero, .profileContent { width:min(100% - 28px,1280px); } .profilePortrait { min-height:420px; } .dashboardCanvas, .modulePage { padding:18px; } .moduleList article { grid-template-columns:1fr; } }
 
 
@@ -698,6 +704,8 @@ blockquote cite { color: var(--indigo); font-style: normal; font-weight: 900; }
 .statusPill { width: fit-content; border-radius: 999px; padding: 7px 10px; background: #eef3ff; color: var(--indigo); font-size: 12px; font-weight: 900; text-transform: uppercase; letter-spacing: .04em; }
 .statusPill.aceptada { background: #ecfdf3; color: #027a48; }
 .statusPill.rechazada { background: #fff1f0; color: #b42318; }
+.statusPill.aprobada, .statusPill.resuelta { background: #ecfdf3; color: #027a48; }
+.statusPill.en_revision { background: #eef3ff; color: var(--indigo); }
 .statusPill.concluido, .statusPill.concluida { background: #f0f9ff; color: #026aa2; }
 .statusPill.pendiente { background: #fffaeb; color: #b54708; }
 .statusPill.cliente { background: #eef3ff; color: var(--indigo); }
@@ -831,9 +839,14 @@ blockquote cite { color: var(--indigo); font-style: normal; font-weight: 900; }
 .existingReview { padding: 14px; border-radius: 18px; color: #027a48 !important; background: #ecfdf3; font-weight: 850; }
 .smallGhostButton { min-height: 40px; border: 1px solid var(--line); border-radius: 999px; padding: 0 14px; background: white; color: var(--text); font-weight: 900; cursor: pointer; }
 .publicationManageItem { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.publicationManageItem small { display: block; margin-top: 4px; color: #b42318; font-weight: 800; }
 .publicationManageItem > div:last-child { display: flex; flex-wrap: wrap; gap: 8px; }
 .publicationManageItem button { min-height: 36px; border: 1px solid var(--line); border-radius: 999px; padding: 0 12px; background: white; color: var(--text); font-weight: 900; cursor: pointer; }
 .publicationManageItem button:last-child { color: white; border: 0; background: var(--graphite); }
+.complaintPanel form { display: grid; gap: 12px; }
+.complaintPanel input, .complaintPanel select, .complaintPanel textarea { width: 100%; min-height: 48px; border: 1px solid var(--line); border-radius: 16px; padding: 0 14px; background: #f8faff; color: var(--text); font: inherit; font-weight: 800; outline: 0; }
+.complaintPanel textarea { min-height: 120px; padding: 14px; resize: vertical; }
+.complaintPanel .primaryButton { width: fit-content; border: 0; cursor: pointer; }
 @media (max-width: 920px) {
   .accountHero, .reviewsHero, .accountGrid, .reviewsWorkspace { grid-template-columns: 1fr; width: min(100% - 32px, 1180px); }
 }

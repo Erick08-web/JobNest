@@ -87,6 +87,10 @@ export type Publication = {
   tipo_precio: string;
   fecha_creacion: string;
   activa?: boolean;
+  estado_revision?: "pendiente" | "aprobada" | "rechazada";
+  comentario_revision?: string;
+  fecha_revision?: string;
+  fecha_actualizacion?: string;
   prestador_nombre?: string;
   prestador_telefono?: string;
   prestador_foto?: string | null;
@@ -356,7 +360,10 @@ export type AdminSummary = {
   administradores: number;
   publicaciones_activas: number;
   publicaciones_inactivas: number;
+  publicaciones_pendientes: number;
+  publicaciones_rechazadas: number;
   solicitudes: number;
+  quejas_pendientes: number;
   mensajes: number;
   resenas: number;
   pagos_total: number;
@@ -379,6 +386,15 @@ export type AdminPublication = {
   categoria: string;
   precio: number | null;
   activa: boolean;
+  estado_revision: "pendiente" | "aprobada" | "rechazada";
+  comentario_revision: string;
+  fecha_revision: string;
+  descripcion: string;
+  ubicacion: string;
+  experiencia: number;
+  habilidades: string;
+  disponibilidad: string;
+  incluye_materiales: boolean;
   fecha_creacion: string;
   prestador_nombre: string;
   prestador_email: string;
@@ -393,6 +409,31 @@ export type AdminRequest = {
   precio: number | null;
   cliente_nombre: string;
   prestador_nombre: string;
+};
+
+export type AdminComplaint = {
+  id: number;
+  tipo_usuario: "cliente" | "prestador" | "administrador";
+  motivo: string;
+  descripcion: string;
+  estado: "pendiente" | "en_revision" | "resuelta";
+  creado_en: string;
+  respuesta_admin: string;
+  solicitud_id?: number | null;
+  publicacion_id?: number | null;
+  usuario_email: string;
+  usuario_nombre: string;
+};
+
+export type AdminAuditEvent = {
+  id: number;
+  tipo_evento: string;
+  entidad: string;
+  entidad_id?: number | null;
+  detalle: string;
+  creado_en: string;
+  actor_email: string;
+  usuario_email: string;
 };
 
 export async function getAdminSummary() {
@@ -415,10 +456,41 @@ export async function listAdminRequests() {
   return data.solicitudes ?? [];
 }
 
+export async function listAdminComplaints() {
+  const data = await backendFetch<{ quejas: AdminComplaint[] }>("/admin/quejas");
+  return data.quejas ?? [];
+}
+
+export async function listAdminAuditEvents() {
+  const data = await backendFetch<{ eventos: AdminAuditEvent[] }>("/admin/bitacora");
+  return data.eventos ?? [];
+}
+
 export async function toggleAdminUser(id: number) {
   return backendFetch(`/admin/usuarios/${id}/toggle`, { method: "POST" });
 }
 
 export async function toggleAdminPublication(id: number) {
   return backendFetch(`/admin/publicaciones/${id}/toggle`, { method: "POST" });
+}
+
+export async function reviewAdminPublication(id: number, payload: { estado: "aprobada" | "rechazada"; comentario?: string }) {
+  return backendFetch(`/admin/publicaciones/${id}/revision`, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function createComplaint(payload: { motivo: string; descripcion: string; solicitud_id?: number; publicacion_id?: number }) {
+  return backendFetch("/quejas", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function resolveAdminComplaint(id: number, payload: { estado: "en_revision" | "resuelta"; respuesta?: string }) {
+  return backendFetch(`/admin/quejas/${id}/resolver`, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
 }
