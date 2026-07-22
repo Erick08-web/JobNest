@@ -5,6 +5,12 @@ import { useState } from "react";
 import { ArrowRight, Eye, LockKeyhole, Mail, ShieldCheck, Sparkles } from "lucide-react";
 import { fetchCurrentUser, loginUser } from "../lib/api";
 
+function dashboardForRole(role?: string) {
+  if (role === "administrador") return "/admin";
+  if (role === "prestador") return "/profesional";
+  return "/cliente";
+}
+
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -19,7 +25,7 @@ export default function LoginPage() {
     try {
       await loginUser(email, password);
       const user = await fetchCurrentUser();
-      window.location.href = user?.tipo_usuario === "prestador" ? "/profesional" : "/cliente";
+      window.location.href = dashboardForRole(user?.tipo_usuario);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "No fue posible iniciar sesión.");
     } finally {

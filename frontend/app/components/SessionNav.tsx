@@ -6,6 +6,12 @@ import { useEffect, useState } from "react";
 import { LogOut, Search, UserRound } from "lucide-react";
 import { fetchCurrentUser, logoutUser, type CurrentUser } from "../lib/api";
 
+function dashboardForRole(role?: CurrentUser["tipo_usuario"]) {
+  if (role === "administrador") return "/admin";
+  if (role === "prestador") return "/profesional";
+  return "/cliente";
+}
+
 export function SessionNav() {
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -24,7 +30,7 @@ export function SessionNav() {
     };
   }, []);
 
-  const dashboardHref = user?.tipo_usuario === "prestador" ? "/profesional" : "/cliente";
+  const dashboardHref = dashboardForRole(user?.tipo_usuario);
 
   const handleLogout = async () => {
     await logoutUser();
@@ -63,20 +69,21 @@ export function SessionNav() {
   );
 }
 
-export function CompactDashboardRail({ role }: { role: "cliente" | "prestador" }) {
-  const home = role === "prestador" ? "/profesional" : "/cliente";
+export function CompactDashboardRail({ role }: { role: "cliente" | "prestador" | "administrador" }) {
+  const home = dashboardForRole(role);
   return (
     <aside className="dashboardRail">
-      <strong>{role === "prestador" ? "JobNest Pro" : "JobNest"}</strong>
+      <strong>{role === "administrador" ? "JobNest Admin" : role === "prestador" ? "JobNest Pro" : "JobNest"}</strong>
       <Link href={home}>Inicio</Link>
-      <Link href="/buscar"><Search size={16} /> Buscar</Link>
-      <Link href="/solicitudes">Solicitudes</Link>
-      <Link href="/mensajes">Mensajes</Link>
-      <Link href="/pagos">Pagos</Link>
-      <Link href="/resenas">Reseñas</Link>
+      {role !== "administrador" ? <Link href="/buscar"><Search size={16} /> Buscar</Link> : null}
+      {role !== "administrador" ? <Link href="/solicitudes">Solicitudes</Link> : null}
+      {role !== "administrador" ? <Link href="/mensajes">Mensajes</Link> : null}
+      {role !== "administrador" ? <Link href="/pagos">Pagos</Link> : null}
+      {role !== "administrador" ? <Link href="/resenas">Reseñas</Link> : null}
       <Link href="/cuenta">Cuenta</Link>
       {role === "prestador" ? <Link href="/publicar">Publicar</Link> : null}
       {role === "prestador" ? <Link href="/agenda">Agenda</Link> : null}
+      {role === "administrador" ? <Link href="/buscar">Ver marketplace</Link> : null}
     </aside>
   );
 }

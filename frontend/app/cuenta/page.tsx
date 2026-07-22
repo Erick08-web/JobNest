@@ -86,7 +86,7 @@ export default function AccountPage() {
     }
   };
 
-  const home = user?.tipo_usuario === "prestador" ? "/profesional" : "/cliente";
+  const home = user?.tipo_usuario === "administrador" ? "/admin" : user?.tipo_usuario === "prestador" ? "/profesional" : "/cliente";
 
   return (
     <main className="accountPage">

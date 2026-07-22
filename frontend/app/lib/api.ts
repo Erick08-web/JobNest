@@ -5,7 +5,7 @@ export type CurrentUser = {
   apellido_materno: string;
   telefono?: string;
   foto_perfil?: string | null;
-  tipo_usuario: "cliente" | "prestador";
+  tipo_usuario: "cliente" | "prestador" | "administrador";
   fecha_registro?: string;
   ultima_sesion?: string;
 };
@@ -345,4 +345,80 @@ export async function rateService(payload: { solicitud_id: number; calificacion:
     method: "POST",
     body: JSON.stringify(payload)
   });
+}
+
+
+export type AdminSummary = {
+  usuarios: number;
+  usuarios_activos: number;
+  clientes: number;
+  prestadores: number;
+  administradores: number;
+  publicaciones_activas: number;
+  publicaciones_inactivas: number;
+  solicitudes: number;
+  mensajes: number;
+  resenas: number;
+  pagos_total: number;
+  solicitudes_por_estado: { estado: string; total: number }[];
+};
+
+export type AdminUser = {
+  id: number;
+  email: string;
+  activo: boolean;
+  creado_en: string;
+  ultimo_login: string;
+  nombre: string;
+  tipo_usuario: "cliente" | "prestador" | "administrador";
+};
+
+export type AdminPublication = {
+  id: number;
+  titulo: string;
+  categoria: string;
+  precio: number | null;
+  activa: boolean;
+  fecha_creacion: string;
+  prestador_nombre: string;
+  prestador_email: string;
+};
+
+export type AdminRequest = {
+  id: number;
+  fecha_solicitud: string;
+  fecha_servicio: string;
+  estado: string;
+  titulo_publicacion: string;
+  precio: number | null;
+  cliente_nombre: string;
+  prestador_nombre: string;
+};
+
+export async function getAdminSummary() {
+  const data = await backendFetch<{ resumen: AdminSummary }>("/admin/resumen");
+  return data.resumen;
+}
+
+export async function listAdminUsers() {
+  const data = await backendFetch<{ usuarios: AdminUser[] }>("/admin/usuarios");
+  return data.usuarios ?? [];
+}
+
+export async function listAdminPublications() {
+  const data = await backendFetch<{ publicaciones: AdminPublication[] }>("/admin/publicaciones");
+  return data.publicaciones ?? [];
+}
+
+export async function listAdminRequests() {
+  const data = await backendFetch<{ solicitudes: AdminRequest[] }>("/admin/solicitudes");
+  return data.solicitudes ?? [];
+}
+
+export async function toggleAdminUser(id: number) {
+  return backendFetch(`/admin/usuarios/${id}/toggle`, { method: "POST" });
+}
+
+export async function toggleAdminPublication(id: number) {
+  return backendFetch(`/admin/publicaciones/${id}/toggle`, { method: "POST" });
 }

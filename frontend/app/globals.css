@@ -498,7 +498,34 @@ blockquote cite { color: var(--indigo); font-style: normal; font-weight: 900; }
 .moduleList { display:grid; gap:14px; width:min(1000px,100%); margin:0 auto; }
 .moduleList article { display:grid; grid-template-columns:auto 1fr auto; gap:16px; align-items:center; padding:20px; }
 .moduleList svg { color:var(--indigo); } .moduleList span { font-size:18px; font-weight:850; } .moduleList button { border:0; border-radius:999px; padding:11px 14px; color:white; background:var(--graphite); font-weight:900; }
+.adminDashboard .dashboardRail { background: #0f172a; }
+.adminHero { background: linear-gradient(135deg,#111827,#0f766e 58%,#3457ff); }
+.adminHero .primaryButton { width: fit-content; border: 0; cursor: pointer; }
+.adminStatusStrip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+.adminStatusStrip article { display: flex; align-items: center; gap: 12px; min-height: 86px; padding: 18px; border: 1px solid var(--line); border-radius: 24px; background: white; box-shadow: var(--shadow-soft); }
+.adminStatusStrip svg { color: var(--teal); flex: 0 0 auto; }
+.adminStatusStrip strong { font-size: 24px; }
+.adminStatusStrip span { color: var(--muted); font-weight: 850; }
+.adminColumns { grid-template-columns: minmax(0,1.15fr) minmax(340px,.85fr); }
+.adminTablePanel { overflow: hidden; }
+.adminSearch { display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 0 12px; border: 1px solid var(--line); border-radius: 999px; background: #f8faff; color: var(--indigo); }
+.adminSearch input { width: 190px; border: 0; outline: 0; background: transparent; color: var(--text); font-weight: 800; }
+.adminTable { display: grid; gap: 10px; }
+.adminTableRow { display: grid; grid-template-columns: minmax(0,1fr) auto auto auto; gap: 12px; align-items: center; padding: 14px; border: 1px solid rgba(16,24,40,.08); border-radius: 18px; background: #f8faff; }
+.adminTableRow div { min-width: 0; }
+.adminTableRow strong, .adminPublicationCard strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.adminTableRow span, .adminPublicationCard span, .adminPublicationCard p { color: var(--muted); font-weight: 800; }
+.adminTableRow button, .adminPublicationCard button, .adminTablePanel > .sectionTitleRow a { display: inline-flex; min-height: 38px; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--line); border-radius: 999px; padding: 0 12px; background: white; color: var(--text); font-weight: 900; cursor: pointer; }
+.adminTableRow button:disabled, .adminPublicationCard button:disabled { opacity: .6; cursor: wait; }
+.adminTable.compact .adminTableRow, .requestRow { grid-template-columns: minmax(0,1fr) auto auto; }
+.adminStateList { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.adminStateList span { border-radius: 999px; padding: 8px 11px; background: #eef3ff; color: #344054; font-weight: 850; text-transform: capitalize; }
+.adminPublicationGrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.adminPublicationCard { display: grid; gap: 12px; padding: 16px; border: 1px solid rgba(16,24,40,.08); border-radius: 20px; background: #f8faff; }
+.adminPublicationCard div:last-child { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.adminAccessBox { min-height: 520px; }
 @media (max-width: 1050px) { .profileHero, .profileContent, .dashboardV2 { grid-template-columns:1fr; } .bookingSummary, .profileAside, .dashboardRail { position:static; height:auto; } .dashboardRail { flex-direction:row; overflow:auto; } .metricGrid, .portfolioGrid, .reviewList, .dashboardColumns { grid-template-columns:1fr; } }
+@media (max-width: 900px) { .adminStatusStrip, .adminPublicationGrid { grid-template-columns: 1fr; } .adminTableRow, .adminTable.compact .adminTableRow, .requestRow { grid-template-columns: 1fr; } .adminSearch input { width: 100%; } }
 @media (max-width: 700px) { .profileSignals { grid-template-columns:1fr; } .profileNav { align-items:flex-start; flex-direction:column; } .profileHero, .profileContent { width:min(100% - 28px,1280px); } .profilePortrait { min-height:420px; } .dashboardCanvas, .modulePage { padding:18px; } .moduleList article { grid-template-columns:1fr; } }
 
 
@@ -672,6 +699,10 @@ blockquote cite { color: var(--indigo); font-style: normal; font-weight: 900; }
 .statusPill.aceptada { background: #ecfdf3; color: #027a48; }
 .statusPill.rechazada { background: #fff1f0; color: #b42318; }
 .statusPill.concluido, .statusPill.concluida { background: #f0f9ff; color: #026aa2; }
+.statusPill.pendiente { background: #fffaeb; color: #b54708; }
+.statusPill.cliente { background: #eef3ff; color: var(--indigo); }
+.statusPill.prestador { background: #f0fdfa; color: #0f766e; }
+.statusPill.administrador { background: #f4f3ff; color: #6941c6; }
 .requestActions { display: flex; align-items: flex-end; justify-content: center; flex-direction: column; gap: 8px; }
 .requestActions a, .requestActions button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 40px; border: 1px solid var(--line); border-radius: 999px; padding: 0 13px; background: white; color: var(--text); font-weight: 900; cursor: pointer; }
 .requestActions button:not(.dangerAction) { color: white; border: 0; background: var(--indigo); }

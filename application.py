@@ -227,6 +227,54 @@ def is_valid_person_name_field(name, is_apellido=False):
 def is_valid_phone_number(phone):
     return re.fullmatch(r"^\d{10,20}$", phone)
 
+
+def get_admin_emails():
+    return {
+        email.strip().lower()
+        for email in os.environ.get('ADMIN_EMAILS', '').split(',')
+        if email.strip()
+    }
+
+
+def user_has_admin_role(cursor, user_id, email=None):
+    if email and email.lower() in get_admin_emails():
+        return True
+
+    cursor.execute("""
+        SELECT 1
+        FROM UsuarioRoles ur
+        INNER JOIN Roles r ON ur.RolId = r.id
+        WHERE ur.UsuarioId = ? AND LOWER(r.Nombre) IN ('admin', 'administrador')
+    """, (user_id,))
+    return cursor.fetchone() is not None
+
+
+def get_user_type(cursor, user_id, email=None):
+    if user_has_admin_role(cursor, user_id, email):
+        return 'administrador'
+
+    cursor.execute("SELECT id FROM Prestadores WHERE UsuarioId = ?", (user_id,))
+    return 'prestador' if cursor.fetchone() is not None else 'cliente'
+
+
+def require_admin_session():
+    if 'usuario_autenticado' not in session or not session['usuario_autenticado']:
+        return jsonify({'success': False, 'message': 'No autenticado'}), 401
+
+    if session.get('tipo_usuario') != 'administrador':
+        return jsonify({'success': False, 'message': 'Solo administradores pueden acceder a esta sección.'}), 403
+
+    return None
+
+
+def fmt_datetime(value):
+    return value.strftime('%d/%m/%Y %H:%M') if value else ''
+
+
+def fmt_date(value):
+    return value.strftime('%d/%m/%Y') if value else ''
+
+
 # ==================== RUTAS PRINCIPALES ====================
 @app.route('/')
 def index():
@@ -411,9 +459,7 @@ def login_usuario():
                     cursor.execute("SELECT Nombre, ApellidoP, ApellidoM, Telefono, FotoPerfil FROM Personas WHERE UsuarioId = ?", (user_id,))
                     persona_data = cursor.fetchone()
 
-                    cursor.execute("SELECT id FROM Prestadores WHERE UsuarioId = ?", (user_id,))
-                    es_prestador = cursor.fetchone() is not None
-                    tipo_usuario = 'prestador' if es_prestador else 'cliente'
+                    tipo_usuario = get_user_type(cursor, user_id, correo_usuario)
 
                     session['usuario_autenticado'] = True
                     session['user_id'] = user_id
@@ -487,8 +533,7 @@ def get_user_data():
             'foto_perfil': user_data[5],
             'tipo_usuario': session.get('tipo_usuario', 'cliente'),
             'fecha_registro': session.get('fecha_registro'),
-            'ultima_sesion': session.get('ultima_sesion'),
-            'tipo_usuario': session.get('tipo_usuario', 'cliente')
+            'ultima_sesion': session.get('ultima_sesion')
         }
         return jsonify(response_data), 200
 
@@ -2280,6 +2325,270 @@ def marcar_concluido(solicitud_id):
     finally:
         if conn:
             conn.close()
+
+
+# ==================== ADMINISTRADOR ====================
+@app.route('/admin/resumen', methods=['GET'])
+def admin_resumen():
+    unauthorized = require_admin_session()
+    if unauthorized:
+        return unauthorized
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT COUNT(*) FROM Usuarios")
+        total_usuarios = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM Usuarios WHERE Activo = 1")
+        usuarios_activos = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM Prestadores")
+        prestadores = cursor.fetchone()[0]
+        cursor.execute("""
+            SELECT COUNT(DISTINCT ur.UsuarioId)
+            FROM UsuarioRoles ur
+            INNER JOIN Roles r ON ur.RolId = r.id
+            WHERE LOWER(r.Nombre) IN ('admin', 'administrador')
+        """)
+        administradores = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM Publicaciones WHERE Activa = 1")
+        publicaciones_activas = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM Publicaciones WHERE Activa = 0")
+        publicaciones_inactivas = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM SolicitudesServicios")
+        solicitudes = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM Mensajes")
+        mensajes = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM Resenas")
+        resenas = cursor.fetchone()[0]
+        cursor.execute("SELECT COALESCE(SUM(Monto), 0) FROM Pagos")
+        pagos_total = float(cursor.fetchone()[0] or 0)
+
+        cursor.execute("""
+            SELECT Estado, COUNT(*)
+            FROM SolicitudesServicios
+            GROUP BY Estado
+            ORDER BY COUNT(*) DESC
+        """)
+        solicitudes_por_estado = [{'estado': row[0] or 'sin_estado', 'total': row[1]} for row in cursor.fetchall()]
+
+        clientes = max(total_usuarios - prestadores - administradores, 0)
+        return jsonify({
+            'success': True,
+            'resumen': {
+                'usuarios': total_usuarios,
+                'usuarios_activos': usuarios_activos,
+                'clientes': clientes,
+                'prestadores': prestadores,
+                'administradores': administradores,
+                'publicaciones_activas': publicaciones_activas,
+                'publicaciones_inactivas': publicaciones_inactivas,
+                'solicitudes': solicitudes,
+                'mensajes': mensajes,
+                'resenas': resenas,
+                'pagos_total': pagos_total,
+                'solicitudes_por_estado': solicitudes_por_estado
+            }
+        }), 200
+
+    except Exception as e:
+        print(f"Error en admin_resumen: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/admin/usuarios', methods=['GET'])
+def admin_usuarios():
+    unauthorized = require_admin_session()
+    if unauthorized:
+        return unauthorized
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT TOP 40
+                u.id, u.Email, u.Activo, u.CreadoEn, u.UltimoLogin,
+                p.Nombre, p.ApellidoP, p.ApellidoM,
+                CASE WHEN pr.id IS NULL THEN 0 ELSE 1 END AS EsPrestador,
+                COALESCE(STRING_AGG(r.Nombre, ', '), '') AS Roles
+            FROM Usuarios u
+            LEFT JOIN Personas p ON u.id = p.UsuarioId
+            LEFT JOIN Prestadores pr ON u.id = pr.UsuarioId
+            LEFT JOIN UsuarioRoles ur ON u.id = ur.UsuarioId
+            LEFT JOIN Roles r ON ur.RolId = r.id
+            GROUP BY u.id, u.Email, u.Activo, u.CreadoEn, u.UltimoLogin,
+                     p.Nombre, p.ApellidoP, p.ApellidoM, pr.id
+            ORDER BY u.CreadoEn DESC
+        """)
+        usuarios = []
+        for row in cursor.fetchall():
+            roles = row[9] or ''
+            tipo = 'administrador' if row[1].lower() in get_admin_emails() or 'admin' in roles.lower() else ('prestador' if row[8] else 'cliente')
+            usuarios.append({
+                'id': row[0],
+                'email': row[1],
+                'activo': bool(row[2]),
+                'creado_en': fmt_datetime(row[3]),
+                'ultimo_login': fmt_datetime(row[4]),
+                'nombre': f"{row[5] or ''} {row[6] or ''} {row[7] or ''}".strip() or 'Sin perfil',
+                'tipo_usuario': tipo
+            })
+
+        return jsonify({'success': True, 'usuarios': usuarios}), 200
+
+    except Exception as e:
+        print(f"Error en admin_usuarios: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/admin/publicaciones', methods=['GET'])
+def admin_publicaciones():
+    unauthorized = require_admin_session()
+    if unauthorized:
+        return unauthorized
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT TOP 40
+                pub.id, pub.Titulo, pub.Categoria, pub.Precio, pub.Activa, pub.FechaCreacion,
+                per.Nombre, per.ApellidoP, per.ApellidoM, u.Email
+            FROM Publicaciones pub
+            INNER JOIN Usuarios u ON pub.UsuarioId = u.id
+            LEFT JOIN Personas per ON u.id = per.UsuarioId
+            ORDER BY pub.FechaCreacion DESC
+        """)
+        publicaciones = [{
+            'id': row[0],
+            'titulo': row[1],
+            'categoria': row[2],
+            'precio': float(row[3]) if row[3] else None,
+            'activa': bool(row[4]),
+            'fecha_creacion': fmt_datetime(row[5]),
+            'prestador_nombre': f"{row[6] or ''} {row[7] or ''} {row[8] or ''}".strip() or row[9],
+            'prestador_email': row[9]
+        } for row in cursor.fetchall()]
+
+        return jsonify({'success': True, 'publicaciones': publicaciones}), 200
+
+    except Exception as e:
+        print(f"Error en admin_publicaciones: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/admin/solicitudes', methods=['GET'])
+def admin_solicitudes():
+    unauthorized = require_admin_session()
+    if unauthorized:
+        return unauthorized
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT TOP 40
+                s.id, s.FechaSolicitud, s.FechaServicio, s.Estado, p.Titulo, p.Precio,
+                cli.Nombre, cli.ApellidoP, cli.ApellidoM,
+                pre.Nombre, pre.ApellidoP, pre.ApellidoM
+            FROM SolicitudesServicios s
+            INNER JOIN Publicaciones p ON s.PublicacionId = p.id
+            LEFT JOIN Personas cli ON s.ClienteId = cli.UsuarioId
+            LEFT JOIN Personas pre ON s.PrestadorId = pre.UsuarioId
+            ORDER BY s.FechaSolicitud DESC
+        """)
+        solicitudes = [{
+            'id': row[0],
+            'fecha_solicitud': fmt_datetime(row[1]),
+            'fecha_servicio': fmt_date(row[2]),
+            'estado': row[3],
+            'titulo_publicacion': row[4],
+            'precio': float(row[5]) if row[5] else None,
+            'cliente_nombre': f"{row[6] or ''} {row[7] or ''} {row[8] or ''}".strip(),
+            'prestador_nombre': f"{row[9] or ''} {row[10] or ''} {row[11] or ''}".strip()
+        } for row in cursor.fetchall()]
+
+        return jsonify({'success': True, 'solicitudes': solicitudes}), 200
+
+    except Exception as e:
+        print(f"Error en admin_solicitudes: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/admin/usuarios/<int:user_id>/toggle', methods=['POST'])
+def admin_toggle_usuario(user_id):
+    unauthorized = require_admin_session()
+    if unauthorized:
+        return unauthorized
+
+    if user_id == session.get('user_id'):
+        return jsonify({'success': False, 'message': 'No puedes desactivar tu propia cuenta administradora.'}), 400
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT Activo FROM Usuarios WHERE id = ?", (user_id,))
+        usuario = cursor.fetchone()
+        if not usuario:
+            return jsonify({'success': False, 'message': 'Usuario no encontrado.'}), 404
+
+        nuevo_estado = 0 if usuario[0] else 1
+        cursor.execute("UPDATE Usuarios SET Activo = ? WHERE id = ?", (nuevo_estado, user_id))
+        conn.commit()
+        return jsonify({'success': True, 'message': f"Usuario {'activado' if nuevo_estado else 'desactivado'} correctamente."}), 200
+
+    except Exception as e:
+        print(f"Error en admin_toggle_usuario: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/admin/publicaciones/<int:publicacion_id>/toggle', methods=['POST'])
+def admin_toggle_publicacion(publicacion_id):
+    unauthorized = require_admin_session()
+    if unauthorized:
+        return unauthorized
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT Activa FROM Publicaciones WHERE id = ?", (publicacion_id,))
+        publicacion = cursor.fetchone()
+        if not publicacion:
+            return jsonify({'success': False, 'message': 'Publicación no encontrada.'}), 404
+
+        nuevo_estado = 0 if publicacion[0] else 1
+        cursor.execute("UPDATE Publicaciones SET Activa = ? WHERE id = ?", (nuevo_estado, publicacion_id))
+        conn.commit()
+        return jsonify({'success': True, 'message': f"Publicación {'activada' if nuevo_estado else 'desactivada'} correctamente."}), 200
+
+    except Exception as e:
+        print(f"Error en admin_toggle_publicacion: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
 
 # ==================== CHATBOT ====================
 def extraer_categoria_y_calificacion(mensaje):
