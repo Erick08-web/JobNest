@@ -67,15 +67,48 @@ export default function AdminDashboardPage() {
         <div className="metricGrid adminMetricGrid">
           <article><ClipboardList /><strong>{summary?.publicaciones_pendientes ?? 0}</strong><span>Publicaciones por revisar</span></article>
           <article><AlertTriangle /><strong>{summary?.quejas_pendientes ?? 0}</strong><span>Quejas pendientes</span></article>
-          <article><UsersRound /><strong>{summary?.usuarios ?? 0}</strong><span>Usuarios totales</span></article>
+          <article><AlertTriangle /><strong>{summary?.alertas_pendientes ?? 0}</strong><span>Alertas sin leer</span></article>
           <article><CreditCard /><strong>{money(summary?.pagos_total ?? 0)}</strong><span>Pagos registrados</span></article>
         </div>
 
         <section className="adminStatusStrip">
           <article><BadgeCheck /><strong>{summary?.publicaciones_activas ?? 0}</strong><span>publicaciones activas</span></article>
           <article><XCircle /><strong>{summary?.publicaciones_rechazadas ?? 0}</strong><span>rechazadas</span></article>
-          <article><BriefcaseBusiness /><strong>{summary?.prestadores ?? 0}</strong><span>prestadores</span></article>
-          <article><ShieldCheck /><strong>{summary?.usuarios_activos ?? 0}</strong><span>usuarios activos</span></article>
+          <article><BriefcaseBusiness /><strong>{summary?.solicitudes_nuevas ?? 0}</strong><span>solicitudes nuevas</span></article>
+          <article><ShieldCheck /><strong>{summary?.servicios_concluidos ?? 0}</strong><span>servicios concluidos</span></article>
+        </section>
+
+        <div className="dashboardColumns adminColumns">
+          <section className="dashPanel adminTablePanel">
+            <div className="sectionTitleRow"><div><span className="sectionKicker">Usuarios</span><h2>Estado de cuentas</h2></div><Link href="/admin/usuarios">Ver usuarios</Link></div>
+            <div className="adminStateList">
+              <span>Clientes activos: <strong>{summary?.clientes_activos ?? 0}</strong></span>
+              <span>Clientes inactivos: <strong>{summary?.clientes_inactivos ?? 0}</strong></span>
+              <span>Prestadores activos: <strong>{summary?.prestadores_activos ?? 0}</strong></span>
+              <span>Prestadores inactivos: <strong>{summary?.prestadores_inactivos ?? 0}</strong></span>
+              <span>Validación pendiente: <strong>{summary?.prestadores_pendientes_validacion ?? 0}</strong></span>
+            </div>
+          </section>
+          <section className="dashPanel adminTablePanel">
+            <div className="sectionTitleRow"><div><span className="sectionKicker">Pagos</span><h2>Estados registrados</h2></div><Link href="/admin/pagos">Ver pagos</Link></div>
+            <div className="adminStateList">
+              {(summary?.pagos_por_estado ?? []).map((item) => <span key={item.estado}>{item.estado}: <strong>{item.total}</strong> · {money(item.monto)}</span>)}
+              {!summary?.pagos_por_estado?.length ? <span>Sin pagos registrados</span> : null}
+            </div>
+          </section>
+        </div>
+
+        <section className="dashPanel adminTablePanel">
+          <div className="sectionTitleRow"><div><span className="sectionKicker">Actividad</span><h2>Eventos recientes</h2></div><Link href="/admin/bitacora">Ver bitácora</Link></div>
+          <div className="adminTable compact">
+            {(summary?.actividad_reciente ?? []).map((item) => (
+              <article className="adminTableRow auditRow" key={item.id}>
+                <div><strong>{item.tipo_evento}</strong><span>{item.entidad} #{item.entidad_id ?? "-"} · {item.detalle}</span></div>
+                <span>{item.creado_en}</span>
+              </article>
+            ))}
+            {!summary?.actividad_reciente?.length ? <p className="mutedPanelText">Aún no hay actividad registrada.</p> : null}
+          </div>
         </section>
 
         <section className="adminModuleGrid">
@@ -83,6 +116,7 @@ export default function AdminDashboardPage() {
           <Link href="/admin/quejas"><AlertTriangle /><strong>Quejas</strong><span>Atender reportes de clientes y prestadores.</span></Link>
           <Link href="/admin/usuarios"><UsersRound /><strong>Usuarios</strong><span>Consultar clientes, prestadores y estado de cuentas.</span></Link>
           <Link href="/admin/solicitudes"><BriefcaseBusiness /><strong>Solicitudes</strong><span>Ver proceso cliente-prestador y estados de servicio.</span></Link>
+          <Link href="/admin/pagos"><CreditCard /><strong>Pagos</strong><span>Consultar pagos internos, estados y servicios relacionados.</span></Link>
           <Link href="/admin/bitacora"><FileText /><strong>Bitácora</strong><span>Monitorear eventos importantes y cambios del sistema.</span></Link>
         </section>
       </section>

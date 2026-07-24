@@ -334,6 +334,20 @@ def fmt_date(value):
     return value.strftime('%d/%m/%Y') if value else ''
 
 
+def parse_int_arg(name, default, minimum=1, maximum=100):
+    try:
+        value = int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def date_filter_args():
+    desde = request.args.get('desde', '').strip()
+    hasta = request.args.get('hasta', '').strip()
+    return desde, hasta
+
+
 def ensure_control_schema(cursor):
     cursor.execute("""
         IF COL_LENGTH('Publicaciones', 'EstadoRevision') IS NULL
@@ -503,6 +517,48 @@ def ensure_control_schema(cursor):
             )
     """)
     cursor.execute("""
+        IF COL_LENGTH('BitacoraAdmin', 'RolActor') IS NULL
+            ALTER TABLE BitacoraAdmin ADD RolActor NVARCHAR(40) NULL
+    """)
+    cursor.execute("""
+        IF COL_LENGTH('BitacoraAdmin', 'ValorAnterior') IS NULL
+            ALTER TABLE BitacoraAdmin ADD ValorAnterior NVARCHAR(MAX) NULL
+    """)
+    cursor.execute("""
+        IF COL_LENGTH('BitacoraAdmin', 'ValorNuevo') IS NULL
+            ALTER TABLE BitacoraAdmin ADD ValorNuevo NVARCHAR(MAX) NULL
+    """)
+    cursor.execute("""
+        IF COL_LENGTH('BitacoraAdmin', 'IpOrigen') IS NULL
+            ALTER TABLE BitacoraAdmin ADD IpOrigen NVARCHAR(80) NULL
+    """)
+    cursor.execute("""
+        IF COL_LENGTH('BitacoraAdmin', 'UserAgent') IS NULL
+            ALTER TABLE BitacoraAdmin ADD UserAgent NVARCHAR(500) NULL
+    """)
+    cursor.execute("""
+        IF COL_LENGTH('AlertasSistema', 'Prioridad') IS NULL
+            ALTER TABLE AlertasSistema ADD Prioridad NVARCHAR(20) NOT NULL
+                CONSTRAINT DF_AlertasSistema_Prioridad DEFAULT 'media'
+    """)
+    cursor.execute("""
+        IF COL_LENGTH('AlertasSistema', 'Entidad') IS NULL
+            ALTER TABLE AlertasSistema ADD Entidad NVARCHAR(80) NULL
+    """)
+    cursor.execute("""
+        IF COL_LENGTH('AlertasSistema', 'EntidadId') IS NULL
+            ALTER TABLE AlertasSistema ADD EntidadId INT NULL
+    """)
+    cursor.execute("""
+        IF COL_LENGTH('Usuarios', 'EstadoCuenta') IS NULL
+            ALTER TABLE Usuarios ADD EstadoCuenta NVARCHAR(30) NOT NULL
+                CONSTRAINT DF_Usuarios_EstadoCuenta DEFAULT 'activa'
+    """)
+    cursor.execute("""
+        IF COL_LENGTH('Pagos', 'SolicitudServicioId') IS NULL
+            ALTER TABLE Pagos ADD SolicitudServicioId INT NULL
+    """)
+    cursor.execute("""
         UPDATE Publicaciones
         SET EstadoRevision = CASE WHEN Activa = 1 THEN 'aprobada' ELSE 'pendiente_revision' END
         WHERE EstadoRevision IS NULL OR EstadoRevision = '' OR EstadoRevision = 'pendiente'
@@ -527,18 +583,35 @@ def ensure_control_schema(cursor):
     """)
 
 
-def audit_event(cursor, tipo_evento, entidad, entidad_id=None, detalle=None, usuario_id=None, actor_id=None):
+def audit_event(cursor, tipo_evento, entidad, entidad_id=None, detalle=None, usuario_id=None, actor_id=None, valor_anterior=None, valor_nuevo=None):
     cursor.execute("""
-        INSERT INTO BitacoraAdmin (UsuarioId, ActorId, TipoEvento, Entidad, EntidadId, Detalle)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (usuario_id, actor_id, tipo_evento, entidad, entidad_id, detalle))
+        INSERT INTO BitacoraAdmin (
+            UsuarioId, ActorId, RolActor, TipoEvento, Entidad, EntidadId, Detalle,
+            ValorAnterior, ValorNuevo, IpOrigen, UserAgent
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        usuario_id,
+        actor_id,
+        session.get('tipo_usuario'),
+        tipo_evento,
+        entidad,
+        entidad_id,
+        detalle,
+        valor_anterior,
+        valor_nuevo,
+        request.headers.get('X-Forwarded-For', request.remote_addr or ''),
+        request.headers.get('User-Agent', '')[:500]
+    ))
 
 
-def crear_alerta(cursor, tipo, titulo, mensaje, publicacion_id=None, version_id=None, usuario_id=None, rol_destino=None):
+def crear_alerta(cursor, tipo, titulo, mensaje, publicacion_id=None, version_id=None, usuario_id=None, rol_destino=None, prioridad='media', entidad=None, entidad_id=None):
     cursor.execute("""
-        INSERT INTO AlertasSistema (UsuarioId, RolDestino, Tipo, Titulo, Mensaje, PublicacionId, VersionId)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (usuario_id, rol_destino, tipo, titulo, mensaje, publicacion_id, version_id))
+        INSERT INTO AlertasSistema (
+            UsuarioId, RolDestino, Tipo, Prioridad, Titulo, Mensaje, PublicacionId, VersionId, Entidad, EntidadId
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (usuario_id, rol_destino, tipo, prioridad, titulo, mensaje, publicacion_id, version_id, entidad, entidad_id))
 
 
 def obtener_siguiente_version(cursor, publicacion_id):
@@ -2853,8 +2926,26 @@ def admin_resumen():
         total_usuarios = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM Usuarios WHERE Activo = 1")
         usuarios_activos = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM Usuarios WHERE Activo = 0")
+        usuarios_inactivos = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM Prestadores")
         prestadores = cursor.fetchone()[0]
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM Prestadores pr
+            INNER JOIN Usuarios u ON pr.UsuarioId = u.id
+            WHERE u.Activo = 1
+        """)
+        prestadores_activos = cursor.fetchone()[0]
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM Prestadores pr
+            INNER JOIN Usuarios u ON pr.UsuarioId = u.id
+            WHERE u.Activo = 0
+        """)
+        prestadores_inactivos = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM Prestadores WHERE Verificado = 0")
+        prestadores_pendientes_validacion = cursor.fetchone()[0]
         cursor.execute("""
             SELECT COUNT(DISTINCT ur.UsuarioId)
             FROM UsuarioRoles ur
@@ -2874,12 +2965,25 @@ def admin_resumen():
         solicitudes = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM Quejas WHERE Estado = 'pendiente'")
         quejas_pendientes = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM Quejas WHERE Estado IN ('asignada', 'en_revision')")
+        quejas_en_revision = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM Quejas WHERE Estado IN ('resuelta', 'cerrada')")
+        quejas_resueltas = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM Mensajes")
         mensajes = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM Resenas")
         resenas = cursor.fetchone()[0]
         cursor.execute("SELECT COALESCE(SUM(Monto), 0) FROM Pagos")
         pagos_total = float(cursor.fetchone()[0] or 0)
+        cursor.execute("""
+            SELECT COALESCE(e.Nombre, 'sin_estado'), COUNT(*), COALESCE(SUM(p.Monto), 0)
+            FROM Pagos p
+            LEFT JOIN Estatus e ON p.EstatusId = e.id
+            GROUP BY e.Nombre
+        """)
+        pagos_por_estado = [{'estado': row[0], 'total': row[1], 'monto': float(row[2] or 0)} for row in cursor.fetchall()]
+        cursor.execute("SELECT COUNT(*) FROM AlertasSistema WHERE Leida = 0")
+        alertas_pendientes = cursor.fetchone()[0]
 
         cursor.execute("""
             SELECT Estado, COUNT(*)
@@ -2888,26 +2992,63 @@ def admin_resumen():
             ORDER BY COUNT(*) DESC
         """)
         solicitudes_por_estado = [{'estado': row[0] or 'sin_estado', 'total': row[1]} for row in cursor.fetchall()]
+        solicitudes_estado_map = {item['estado']: item['total'] for item in solicitudes_por_estado}
+
+        cursor.execute("""
+            SELECT TOP 8 b.id, b.TipoEvento, b.Entidad, b.EntidadId, b.Detalle, b.CreadoEn,
+                   actor.Email
+            FROM BitacoraAdmin b
+            LEFT JOIN Usuarios actor ON b.ActorId = actor.id
+            ORDER BY b.CreadoEn DESC
+        """)
+        actividad_reciente = [{
+            'id': row[0],
+            'tipo_evento': row[1],
+            'entidad': row[2],
+            'entidad_id': row[3],
+            'detalle': row[4] or '',
+            'creado_en': fmt_datetime(row[5]),
+            'actor_email': row[6] or ''
+        } for row in cursor.fetchall()]
 
         clientes = max(total_usuarios - prestadores - administradores, 0)
+        clientes_activos = max(usuarios_activos - prestadores_activos - administradores, 0)
+        clientes_inactivos = max(usuarios_inactivos - prestadores_inactivos, 0)
         return jsonify({
             'success': True,
             'resumen': {
                 'usuarios': total_usuarios,
                 'usuarios_activos': usuarios_activos,
+                'usuarios_inactivos': usuarios_inactivos,
                 'clientes': clientes,
+                'clientes_activos': clientes_activos,
+                'clientes_inactivos': clientes_inactivos,
                 'prestadores': prestadores,
+                'prestadores_activos': prestadores_activos,
+                'prestadores_inactivos': prestadores_inactivos,
+                'prestadores_pendientes_validacion': prestadores_pendientes_validacion,
                 'administradores': administradores,
                 'publicaciones_activas': publicaciones_activas,
                 'publicaciones_inactivas': publicaciones_inactivas,
                 'publicaciones_pendientes': publicaciones_pendientes,
                 'publicaciones_rechazadas': publicaciones_rechazadas,
                 'solicitudes': solicitudes,
+                'solicitudes_nuevas': solicitudes_estado_map.get('pendiente', 0),
+                'solicitudes_aceptadas': solicitudes_estado_map.get('aceptada', 0),
+                'solicitudes_rechazadas': solicitudes_estado_map.get('rechazada', 0),
+                'servicios_concluidos': solicitudes_estado_map.get('concluido', 0) + solicitudes_estado_map.get('concluida', 0) + solicitudes_estado_map.get('calificado', 0),
+                'servicios_cancelados': solicitudes_estado_map.get('cancelada_cliente', 0) + solicitudes_estado_map.get('cancelada_prestador', 0) + solicitudes_estado_map.get('cancelada', 0),
+                'servicios_con_incidencias': solicitudes_estado_map.get('en_disputa', 0),
                 'quejas_pendientes': quejas_pendientes,
+                'quejas_en_revision': quejas_en_revision,
+                'quejas_resueltas': quejas_resueltas,
+                'alertas_pendientes': alertas_pendientes,
                 'mensajes': mensajes,
                 'resenas': resenas,
                 'pagos_total': pagos_total,
-                'solicitudes_por_estado': solicitudes_por_estado
+                'pagos_por_estado': pagos_por_estado,
+                'solicitudes_por_estado': solicitudes_por_estado,
+                'actividad_reciente': actividad_reciente
             }
         }), 200
 
@@ -3187,6 +3328,155 @@ def admin_solicitudes():
 
     except Exception as e:
         print(f"Error en admin_solicitudes: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/admin/pagos', methods=['GET'])
+def admin_pagos():
+    unauthorized = require_admin_session()
+    if unauthorized:
+        return unauthorized
+
+    estado = request.args.get('estado', '').strip()
+    q = request.args.get('q', '').strip()
+    page = parse_int_arg('page', 1, 1, 10000)
+    page_size = parse_int_arg('page_size', 25, 1, 100)
+    offset = (page - 1) * page_size
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_control_schema(cursor)
+        where = []
+        params = []
+        if estado:
+            where.append("COALESCE(e.Nombre, '') = ?")
+            params.append(estado)
+        if q:
+            where.append("(u_cli.Email LIKE ? OR u_pre.Email LIKE ? OR p.ProcesadorChargeId LIKE ? OR pub.Titulo LIKE ?)")
+            params.extend([f'%{q}%', f'%{q}%', f'%{q}%', f'%{q}%'])
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        cursor.execute(f"""
+            SELECT COUNT(*)
+            FROM Pagos p
+            LEFT JOIN Estatus e ON p.EstatusId = e.id
+            LEFT JOIN SolicitudesServicios ss ON p.SolicitudServicioId = ss.id
+            LEFT JOIN Publicaciones pub ON ss.PublicacionId = pub.id
+            LEFT JOIN Usuarios u_cli ON ss.ClienteId = u_cli.id
+            LEFT JOIN Usuarios u_pre ON ss.PrestadorId = u_pre.id
+            {where_sql}
+        """, params)
+        total = cursor.fetchone()[0]
+        cursor.execute(f"""
+            SELECT p.id, p.Monto, p.Moneda, p.Procesador, p.ProcesadorChargeId, p.PagadoEn, p.CreadoEn,
+                   COALESCE(e.Nombre, 'sin_estado') AS EstadoPago,
+                   mp.Nombre AS Metodo,
+                   ss.id AS SolicitudId, ss.Estado AS EstadoSolicitud,
+                   pub.Titulo,
+                   u_cli.Email AS ClienteEmail, u_pre.Email AS PrestadorEmail
+            FROM Pagos p
+            LEFT JOIN Estatus e ON p.EstatusId = e.id
+            LEFT JOIN MetodosPago mp ON p.MetodoId = mp.id
+            LEFT JOIN SolicitudesServicios ss ON p.SolicitudServicioId = ss.id
+            LEFT JOIN Publicaciones pub ON ss.PublicacionId = pub.id
+            LEFT JOIN Usuarios u_cli ON ss.ClienteId = u_cli.id
+            LEFT JOIN Usuarios u_pre ON ss.PrestadorId = u_pre.id
+            {where_sql}
+            ORDER BY p.CreadoEn DESC
+            OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+        """, [*params, offset, page_size])
+        pagos = [{
+            'id': row[0],
+            'monto': float(row[1] or 0),
+            'moneda': row[2] or 'MXN',
+            'procesador': row[3] or 'interno',
+            'referencia': row[4] or '',
+            'pagado_en': fmt_datetime(row[5]),
+            'creado_en': fmt_datetime(row[6]),
+            'estado': row[7],
+            'metodo': row[8] or '',
+            'solicitud_id': row[9],
+            'estado_solicitud': row[10] or '',
+            'publicacion_titulo': row[11] or '',
+            'cliente_email': row[12] or '',
+            'prestador_email': row[13] or ''
+        } for row in cursor.fetchall()]
+        return jsonify({'success': True, 'pagos': pagos, 'total': total, 'page': page, 'page_size': page_size}), 200
+    except Exception as e:
+        print(f"Error en admin_pagos: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/admin/alertas', methods=['GET'])
+def admin_alertas():
+    unauthorized = require_admin_session()
+    if unauthorized:
+        return unauthorized
+
+    solo_no_leidas = request.args.get('no_leidas', '0') == '1'
+    page = parse_int_arg('page', 1, 1, 10000)
+    page_size = parse_int_arg('page_size', 25, 1, 100)
+    offset = (page - 1) * page_size
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_control_schema(cursor)
+        where = "WHERE Leida = 0" if solo_no_leidas else ""
+        cursor.execute(f"SELECT COUNT(*) FROM AlertasSistema {where}")
+        total = cursor.fetchone()[0]
+        cursor.execute(f"""
+            SELECT id, Tipo, Prioridad, Titulo, Mensaje, PublicacionId, VersionId,
+                   Entidad, EntidadId, Leida, CreadoEn
+            FROM AlertasSistema
+            {where}
+            ORDER BY CASE Prioridad WHEN 'alta' THEN 0 WHEN 'media' THEN 1 ELSE 2 END, CreadoEn DESC
+            OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+        """, (offset, page_size))
+        alertas = [{
+            'id': row[0],
+            'tipo': row[1],
+            'prioridad': row[2],
+            'titulo': row[3],
+            'mensaje': row[4],
+            'publicacion_id': row[5],
+            'version_id': row[6],
+            'entidad': row[7],
+            'entidad_id': row[8],
+            'leida': bool(row[9]),
+            'creado_en': fmt_datetime(row[10])
+        } for row in cursor.fetchall()]
+        return jsonify({'success': True, 'alertas': alertas, 'total': total, 'page': page, 'page_size': page_size}), 200
+    except Exception as e:
+        print(f"Error en admin_alertas: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/admin/alertas/<int:alerta_id>/leer', methods=['POST'])
+def admin_marcar_alerta_leida(alerta_id):
+    unauthorized = require_admin_session()
+    if unauthorized:
+        return unauthorized
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_control_schema(cursor)
+        cursor.execute("UPDATE AlertasSistema SET Leida = 1, LeidaEn = GETDATE() WHERE id = ?", (alerta_id,))
+        audit_event(cursor, 'alerta_marcada_leida', 'AlertasSistema', alerta_id, 'Alerta marcada como leída.', actor_id=session.get('user_id'))
+        conn.commit()
+        return jsonify({'success': True, 'message': 'Alerta marcada como leída.'}), 200
+    except Exception as e:
+        print(f"Error en admin_marcar_alerta_leida: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
     finally:
         if conn:

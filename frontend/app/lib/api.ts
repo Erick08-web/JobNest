@@ -376,19 +376,36 @@ export async function rateService(payload: { solicitud_id: number; calificacion:
 export type AdminSummary = {
   usuarios: number;
   usuarios_activos: number;
+  usuarios_inactivos: number;
   clientes: number;
+  clientes_activos: number;
+  clientes_inactivos: number;
   prestadores: number;
+  prestadores_activos: number;
+  prestadores_inactivos: number;
+  prestadores_pendientes_validacion: number;
   administradores: number;
   publicaciones_activas: number;
   publicaciones_inactivas: number;
   publicaciones_pendientes: number;
   publicaciones_rechazadas: number;
   solicitudes: number;
+  solicitudes_nuevas: number;
+  solicitudes_aceptadas: number;
+  solicitudes_rechazadas: number;
+  servicios_concluidos: number;
+  servicios_cancelados: number;
+  servicios_con_incidencias: number;
   quejas_pendientes: number;
+  quejas_en_revision: number;
+  quejas_resueltas: number;
+  alertas_pendientes: number;
   mensajes: number;
   resenas: number;
   pagos_total: number;
+  pagos_por_estado: { estado: string; total: number; monto: number }[];
   solicitudes_por_estado: { estado: string; total: number }[];
+  actividad_reciente: AdminAuditEvent[];
 };
 
 export type AdminUser = {
@@ -515,6 +532,37 @@ export type AdminAuditEvent = {
   usuario_email: string;
 };
 
+export type AdminPayment = {
+  id: number;
+  monto: number;
+  moneda: string;
+  procesador: string;
+  referencia: string;
+  pagado_en: string;
+  creado_en: string;
+  estado: string;
+  metodo: string;
+  solicitud_id?: number | null;
+  estado_solicitud: string;
+  publicacion_titulo: string;
+  cliente_email: string;
+  prestador_email: string;
+};
+
+export type AdminAlert = {
+  id: number;
+  tipo: string;
+  prioridad: "baja" | "media" | "alta";
+  titulo: string;
+  mensaje: string;
+  publicacion_id?: number | null;
+  version_id?: number | null;
+  entidad?: string | null;
+  entidad_id?: number | null;
+  leida: boolean;
+  creado_en: string;
+};
+
 export async function getAdminSummary() {
   const data = await backendFetch<{ resumen: AdminSummary }>("/admin/resumen");
   return data.resumen;
@@ -548,6 +596,22 @@ export async function listAdminComplaints() {
 export async function listAdminAuditEvents() {
   const data = await backendFetch<{ eventos: AdminAuditEvent[] }>("/admin/bitacora");
   return data.eventos ?? [];
+}
+
+export async function listAdminPayments(params = new URLSearchParams()) {
+  const query = params.toString();
+  const data = await backendFetch<{ pagos: AdminPayment[]; total: number; page: number; page_size: number }>(`/admin/pagos${query ? `?${query}` : ""}`);
+  return data;
+}
+
+export async function listAdminAlerts(params = new URLSearchParams()) {
+  const query = params.toString();
+  const data = await backendFetch<{ alertas: AdminAlert[]; total: number; page: number; page_size: number }>(`/admin/alertas${query ? `?${query}` : ""}`);
+  return data;
+}
+
+export async function markAdminAlertRead(id: number) {
+  return backendFetch(`/admin/alertas/${id}/leer`, { method: "POST" });
 }
 
 export async function toggleAdminUser(id: number) {

@@ -79,6 +79,7 @@ export function CompactDashboardRail({ role }: { role: "cliente" | "prestador" |
       {role === "administrador" ? <Link href="/admin/quejas">Quejas</Link> : null}
       {role === "administrador" ? <Link href="/admin/usuarios">Usuarios</Link> : null}
       {role === "administrador" ? <Link href="/admin/solicitudes">Solicitudes</Link> : null}
+      {role === "administrador" ? <Link href="/admin/pagos">Pagos</Link> : null}
       {role === "administrador" ? <Link href="/admin/bitacora">Bitácora</Link> : null}
       {role !== "administrador" ? <Link href="/buscar"><Search size={16} /> Buscar</Link> : null}
       {role !== "administrador" ? <Link href="/solicitudes">Solicitudes</Link> : null}
