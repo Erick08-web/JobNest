@@ -213,6 +213,7 @@ export default function SearchPage() {
               {filteredPublications.map((publication, index) => (
                 <article className="resultCard" key={publication.id}>
                   <div className={`resultVisual portrait${(index % 6) + 1}`}>
+                    {publication.imagen_principal ? <img src={publication.imagen_principal} alt={publication.titulo} /> : null}
                     <button aria-label="Guardar publicación"><Heart size={19} /></button>
                     <span>{publication.disponibilidad || "A convenir"}</span>
                   </div>

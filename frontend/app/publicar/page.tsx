@@ -21,6 +21,7 @@ export default function PublishPage() {
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [publicationImages, setPublicationImages] = useState<File[]>([]);
   const [form, setForm] = useState({ titulo: "", descripcion: "", categoria: "Reparaciones", salario: "", ubicacion: "Querétaro", experiencia: "1", habilidades: "", disponibilidad: "A convenir", tipo_precio: "servicio", incluye_materiales: false });
   const [portfolio, setPortfolio] = useState<{ publicacion_id: string; titulo: string; descripcion: string; imagen: File | null }>({ publicacion_id: "", titulo: "", descripcion: "", imagen: null });
 
@@ -48,7 +49,23 @@ export default function PublishPage() {
 
   const resetPublicationForm = () => {
     setEditingId(null);
+    setPublicationImages([]);
     setForm({ titulo: "", descripcion: "", categoria: "Reparaciones", salario: "", ubicacion: "Querétaro", experiencia: "1", habilidades: "", disponibilidad: "A convenir", tipo_precio: "servicio", incluye_materiales: false });
+  };
+
+  const selectPublicationImages = (files: FileList | null) => {
+    if (!files) return;
+    const next = Array.from(files);
+    if (next.length > 8) {
+      setMessage("Puedes subir máximo 8 imágenes por versión.");
+      return;
+    }
+    const invalid = next.find((file) => !["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 5 * 1024 * 1024);
+    if (invalid) {
+      setMessage("Cada imagen debe ser JPEG, PNG o WebP y pesar máximo 5 MB.");
+      return;
+    }
+    setPublicationImages(next);
   };
 
   const handleCreate = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -56,7 +73,8 @@ export default function PublishPage() {
     setSaving(true);
     setMessage("");
     try {
-      const result = editingId ? await editPublication(editingId, form) : await createPublication(form);
+      const payload = { ...form, imagenes: publicationImages };
+      const result = editingId ? await editPublication(editingId, payload) : await createPublication(payload);
       setMessage(result.message || (editingId ? "Publicación actualizada correctamente." : "Publicación creada correctamente."));
       resetPublicationForm();
       await load();
@@ -143,6 +161,8 @@ export default function PublishPage() {
             <label><span>Disponibilidad</span><input value={form.disponibilidad} onChange={(event) => update("disponibilidad", event.target.value)} placeholder="Hoy, esta semana, agenda abierta" /></label>
           </div>
           <label className="fullField"><span>Habilidades</span><input value={form.habilidades} onChange={(event) => update("habilidades", event.target.value)} placeholder="Instalación, mantenimiento, urgencias" /></label>
+          <label className="fileDrop publicationImageDrop"><ImagePlus /><span>{publicationImages.length ? `${publicationImages.length} imagen(es) seleccionadas` : "Imágenes de la publicación"}</span><input type="file" multiple accept="image/png,image/jpeg,image/jpg,image/webp" onChange={(event) => selectPublicationImages(event.target.files)} /></label>
+          {publicationImages.length ? <div className="publicationImagePreview">{publicationImages.map((file) => <span key={`${file.name}-${file.size}`}>{file.name}</span>)}</div> : null}
           <label className="publishCheck"><input type="checkbox" checked={form.incluye_materiales} onChange={(event) => update("incluye_materiales", event.target.checked)} /><span>Incluye materiales</span></label>
           <button className="submitButton" disabled={saving}>{saving ? "Guardando..." : editingId ? "Guardar cambios" : "Crear publicación"}</button>
         </form>
@@ -161,7 +181,7 @@ export default function PublishPage() {
 
           <section className="myPublicationsCard">
             <span className="sectionKicker"><CheckCircle2 size={16} /> Tus publicaciones</span>
-            {publications.slice(0, 6).map((item) => <article className="publicationManageItem" key={item.id}><div><strong>{item.titulo}</strong><span>{item.categoria} · {item.estado_revision ?? "aprobada"} · {item.activa ? "Activa" : "Inactiva"}</span>{item.comentario_revision ? <small>{item.comentario_revision}</small> : null}</div><div><button type="button" onClick={() => startEdit(item)}>Editar</button><button type="button" onClick={() => void handleToggle(item.id)}>{item.activa ? "Desactivar" : "Activar"}</button></div></article>)}
+            {publications.slice(0, 6).map((item) => <article className="publicationManageItem" key={item.id}>{item.imagen_principal ? <img src={item.imagen_principal} alt={item.titulo} /> : null}<div><strong>{item.titulo}</strong><span>{item.categoria} · v{item.version_numero ?? 1} · {item.estado_revision ?? "aprobada"}</span><span>Publicada: {item.version_publica ? `v${item.version_publica}` : "sin versión pública"}</span>{item.comentario_revision ? <small>{item.comentario_revision}</small> : null}</div><div><button type="button" onClick={() => startEdit(item)}>Editar versión</button><button type="button" onClick={() => void handleToggle(item.id)}>{item.activa ? "Desactivar" : "Activar"}</button></div></article>)}
             {!publications.length ? <p>Aún no tienes publicaciones.</p> : null}
           </section>
         </aside>

@@ -94,6 +94,7 @@ export default function ServiceProfilePage() {
 
       <section className="profileHero">
         <div className="profilePortrait realServicePortrait">
+          {publication.imagen_principal ? <img src={publication.imagen_principal} alt={publication.titulo} /> : null}
           <span><ShieldCheck size={18} /> Perfil conectado a JobNest</span>
         </div>
         <div className="profileIntro">

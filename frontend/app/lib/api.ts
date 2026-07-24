@@ -87,16 +87,22 @@ export type Publication = {
   tipo_precio: string;
   fecha_creacion: string;
   activa?: boolean;
-  estado_revision?: "pendiente" | "aprobada" | "rechazada";
+  estado_revision?: PublicationState;
   comentario_revision?: string;
   fecha_revision?: string;
   fecha_actualizacion?: string;
+  version_id?: number;
+  version_numero?: number;
+  version_publica?: number | null;
+  imagen_principal?: string | null;
   prestador_nombre?: string;
   prestador_telefono?: string;
   prestador_foto?: string | null;
   prestador_email?: string;
   prestador_id?: number;
 };
+
+export type PublicationState = "borrador" | "pendiente_revision" | "correcciones_solicitadas" | "aprobada" | "rechazada" | "suspendida" | "oculta";
 
 export type PortfolioWork = {
   id: number;
@@ -259,6 +265,7 @@ export type PublicationPayload = {
   disponibilidad: string;
   tipo_precio: string;
   incluye_materiales: boolean;
+  imagenes?: File[];
 };
 
 export async function listMyPublications() {
@@ -269,12 +276,14 @@ export async function listMyPublications() {
 export async function createPublication(payload: PublicationPayload) {
   const formData = new FormData();
   Object.entries(payload).forEach(([key, value]) => {
+    if (key === "imagenes") return;
     if (key === "incluye_materiales") {
       if (value) formData.append(key, "on");
     } else {
       formData.append(key, String(value));
     }
   });
+  payload.imagenes?.forEach((file) => formData.append("imagenes", file));
   return backendFetch("/crear_publicacion", { method: "POST", body: formData });
 }
 
@@ -326,13 +335,25 @@ export async function getOwnPublication(id: number) {
 export async function editPublication(id: number, payload: PublicationPayload) {
   const formData = new FormData();
   Object.entries(payload).forEach(([key, value]) => {
+    if (key === "imagenes") return;
     if (key === "incluye_materiales") {
       if (value) formData.append(key, "on");
     } else {
       formData.append(key, String(value));
     }
   });
+  payload.imagenes?.forEach((file) => formData.append("imagenes", file));
   return backendFetch(`/editar_publicacion/${id}`, { method: "POST", body: formData });
+}
+
+export async function uploadPublicationImages(publicacionId: number, files: File[]) {
+  const formData = new FormData();
+  files.forEach((file) => formData.append("imagenes", file));
+  return backendFetch(`/publicaciones/${publicacionId}/imagenes`, { method: "POST", body: formData });
+}
+
+export async function deletePublicationImage(publicacionId: number, imageId: number) {
+  return backendFetch(`/publicaciones/${publicacionId}/imagenes/${imageId}`, { method: "DELETE" });
 }
 
 export async function togglePublication(id: number) {
@@ -386,7 +407,7 @@ export type AdminPublication = {
   categoria: string;
   precio: number | null;
   activa: boolean;
-  estado_revision: "pendiente" | "aprobada" | "rechazada";
+  estado_revision: PublicationState;
   comentario_revision: string;
   fecha_revision: string;
   descripcion: string;
@@ -398,6 +419,64 @@ export type AdminPublication = {
   fecha_creacion: string;
   prestador_nombre: string;
   prestador_email: string;
+  version_id: number;
+  version_numero: number;
+  es_version_publica: boolean;
+  imagen_principal?: string | null;
+};
+
+export type AdminPublicationVersion = {
+  id: number;
+  version_numero: number;
+  titulo: string;
+  descripcion: string;
+  categoria: string;
+  precio: number | null;
+  ubicacion: string;
+  experiencia: number;
+  habilidades: string;
+  disponibilidad: string;
+  incluye_materiales: boolean;
+  tipo_precio: string;
+  estado: PublicationState;
+  observaciones: string;
+  motivo_rechazo: string;
+  es_version_publica: boolean;
+  creado_en: string;
+  revisado_en: string;
+};
+
+export type AdminPublicationImage = {
+  id: number;
+  version_id: number;
+  imagen_url: string;
+  posicion: number;
+  es_principal: boolean;
+  estado_revision: "pendiente" | "aprobada" | "rechazada" | "eliminada";
+  motivo_rechazo: string;
+  creado_en: string;
+};
+
+export type AdminPublicationReview = {
+  id: number;
+  accion: string;
+  estado_anterior: string;
+  estado_nuevo: string;
+  observaciones: string;
+  creado_en: string;
+  admin_email: string;
+};
+
+export type AdminPublicationDetail = {
+  id: number;
+  activa: boolean;
+  fecha_creacion: string;
+  prestador: { id: number; email: string; activo: boolean; nombre: string };
+  version_publica: AdminPublicationVersion | null;
+  version_actual: AdminPublicationVersion | null;
+  versiones: AdminPublicationVersion[];
+  imagenes: AdminPublicationImage[];
+  revisiones: AdminPublicationReview[];
 };
 
 export type AdminRequest = {
@@ -451,6 +530,11 @@ export async function listAdminPublications() {
   return data.publicaciones ?? [];
 }
 
+export async function getAdminPublication(id: number) {
+  const data = await backendFetch<{ publicacion: AdminPublicationDetail }>(`/admin/publicaciones/${id}`);
+  return data.publicacion;
+}
+
 export async function listAdminRequests() {
   const data = await backendFetch<{ solicitudes: AdminRequest[] }>("/admin/solicitudes");
   return data.solicitudes ?? [];
@@ -474,10 +558,28 @@ export async function toggleAdminPublication(id: number) {
   return backendFetch(`/admin/publicaciones/${id}/toggle`, { method: "POST" });
 }
 
-export async function reviewAdminPublication(id: number, payload: { estado: "aprobada" | "rechazada"; comentario?: string }) {
+export async function reviewAdminPublication(id: number, payload: { estado: Exclude<PublicationState, "borrador">; comentario?: string; version_id?: number }) {
   return backendFetch(`/admin/publicaciones/${id}/revision`, {
     method: "POST",
     body: JSON.stringify(payload)
+  });
+}
+
+export async function reactivateAdminPublication(id: number, comentario?: string) {
+  return backendFetch(`/admin/publicaciones/${id}/reactivar`, {
+    method: "POST",
+    body: JSON.stringify({ comentario })
+  });
+}
+
+export async function approveAdminImage(id: number) {
+  return backendFetch(`/admin/imagenes/${id}/aprobar`, { method: "POST" });
+}
+
+export async function rejectAdminImage(id: number, motivo: string) {
+  return backendFetch(`/admin/imagenes/${id}/rechazar`, {
+    method: "POST",
+    body: JSON.stringify({ motivo })
   });
 }
 

@@ -15,6 +15,7 @@ def cargar_env_local(ruta='.env'):
 cargar_env_local()
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, send_from_directory, abort
 import pyodbc
+import uuid
 from passlib.hash import argon2
 from werkzeug.security import check_password_hash as verificar_hash_legacy
 from email_validator import validate_email, EmailNotValidError
@@ -53,6 +54,19 @@ DB_CONFIG = {
 
 ALLOWED_IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
 PORTAFOLIO_UPLOAD_FOLDER = os.path.join(app.root_path, 'static', 'uploads', 'portafolio')
+PUBLICACION_UPLOAD_FOLDER = os.path.join(app.root_path, 'static', 'uploads', 'publicaciones')
+MAX_PUBLICATION_IMAGES = 8
+MAX_PUBLICATION_IMAGE_BYTES = 5 * 1024 * 1024
+PUBLICATION_STATES = {
+    'borrador',
+    'pendiente_revision',
+    'correcciones_solicitadas',
+    'aprobada',
+    'rechazada',
+    'suspendida',
+    'oculta'
+}
+IMAGE_REVIEW_STATES = {'pendiente', 'aprobada', 'rechazada', 'eliminada'}
 ENCRYPTION_PREFIX = 'enc:v1:'
 
 
@@ -106,6 +120,51 @@ def descifrar_dato(valor):
 
 def archivo_imagen_permitido(nombre_archivo):
     return '.' in nombre_archivo and nombre_archivo.rsplit('.', 1)[1].lower() in ALLOWED_IMAGE_EXTENSIONS
+
+
+def detectar_tipo_imagen(bytes_iniciales):
+    if bytes_iniciales.startswith(b'\xff\xd8\xff'):
+        return 'image/jpeg', 'jpg'
+    if bytes_iniciales.startswith(b'\x89PNG\r\n\x1a\n'):
+        return 'image/png', 'png'
+    if bytes_iniciales[:4] == b'RIFF' and bytes_iniciales[8:12] == b'WEBP':
+        return 'image/webp', 'webp'
+    return None, None
+
+
+def validar_imagen_publicacion(file_storage):
+    if not file_storage or file_storage.filename == '':
+        return False, 'Selecciona una imagen válida.', None
+
+    nombre = secure_filename(file_storage.filename)
+    extension = nombre.rsplit('.', 1)[1].lower() if '.' in nombre else ''
+    if extension not in ALLOWED_IMAGE_EXTENSIONS:
+        return False, 'Solo se permiten imágenes JPEG, PNG o WebP.', None
+
+    file_storage.stream.seek(0, os.SEEK_END)
+    size = file_storage.stream.tell()
+    file_storage.stream.seek(0)
+    if size <= 0:
+        return False, 'La imagen está vacía.', None
+    if size > MAX_PUBLICATION_IMAGE_BYTES:
+        return False, 'Cada imagen debe pesar máximo 5 MB.', None
+
+    cabecera = file_storage.stream.read(32)
+    file_storage.stream.seek(0)
+    mime_real, extension_real = detectar_tipo_imagen(cabecera)
+    if not mime_real:
+        return False, 'El archivo no parece ser una imagen JPEG, PNG o WebP válida.', None
+
+    navegador_mime = (file_storage.mimetype or '').lower()
+    if navegador_mime and navegador_mime not in {'image/jpeg', 'image/png', 'image/webp'}:
+        return False, 'El tipo MIME del archivo no está permitido.', None
+
+    if extension == 'jpeg':
+        extension = 'jpg'
+    if extension_real != extension:
+        return False, 'La extensión no coincide con el contenido real de la imagen.', None
+
+    return True, '', {'mime': mime_real, 'extension': extension_real, 'size': size}
 
 def get_db_connection():
     missing = [
@@ -298,6 +357,121 @@ def ensure_control_schema(cursor):
             ALTER TABLE Publicaciones ADD FechaActualizacion DATETIME NULL
     """)
     cursor.execute("""
+        IF OBJECT_ID('PublicacionVersiones', 'U') IS NULL
+            CREATE TABLE PublicacionVersiones (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                PublicacionId INT NOT NULL,
+                VersionNumero INT NOT NULL,
+                Titulo NVARCHAR(255) NOT NULL,
+                Descripcion NVARCHAR(MAX) NULL,
+                Categoria NVARCHAR(100) NOT NULL,
+                Precio DECIMAL(10,2) NULL,
+                Ubicacion NVARCHAR(255) NULL,
+                Experiencia INT NULL,
+                Habilidades NVARCHAR(500) NULL,
+                Disponibilidad NVARCHAR(100) NULL,
+                IncluyeMateriales BIT NOT NULL DEFAULT 0,
+                TipoPrecio NVARCHAR(20) NULL,
+                Estado NVARCHAR(40) NOT NULL DEFAULT 'pendiente_revision',
+                AutorId INT NOT NULL,
+                RevisadoPor INT NULL,
+                Observaciones NVARCHAR(MAX) NULL,
+                MotivoRechazo NVARCHAR(MAX) NULL,
+                EsVersionPublica BIT NOT NULL DEFAULT 0,
+                CreadoEn DATETIME NOT NULL DEFAULT GETDATE(),
+                RevisadoEn DATETIME NULL,
+                ActualizadoEn DATETIME NULL,
+                FOREIGN KEY (PublicacionId) REFERENCES Publicaciones(id),
+                FOREIGN KEY (AutorId) REFERENCES Usuarios(id)
+            )
+    """)
+    cursor.execute("""
+        IF NOT EXISTS (
+            SELECT 1 FROM sys.indexes
+            WHERE name = 'UX_PublicacionVersiones_Publicacion_Numero'
+              AND object_id = OBJECT_ID('PublicacionVersiones')
+        )
+            CREATE UNIQUE INDEX UX_PublicacionVersiones_Publicacion_Numero
+            ON PublicacionVersiones(PublicacionId, VersionNumero)
+    """)
+    cursor.execute("""
+        IF NOT EXISTS (
+            SELECT 1 FROM sys.indexes
+            WHERE name = 'IX_PublicacionVersiones_Estado'
+              AND object_id = OBJECT_ID('PublicacionVersiones')
+        )
+            CREATE INDEX IX_PublicacionVersiones_Estado
+            ON PublicacionVersiones(Estado, CreadoEn DESC)
+    """)
+    cursor.execute("""
+        IF OBJECT_ID('PublicacionImagenes', 'U') IS NULL
+            CREATE TABLE PublicacionImagenes (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                PublicacionId INT NOT NULL,
+                VersionId INT NOT NULL,
+                UsuarioId INT NOT NULL,
+                ImagenUrl NVARCHAR(500) NOT NULL,
+                NombreArchivo NVARCHAR(255) NOT NULL,
+                MimeType NVARCHAR(80) NOT NULL,
+                TamanoBytes INT NOT NULL,
+                Posicion INT NOT NULL DEFAULT 0,
+                EsPrincipal BIT NOT NULL DEFAULT 0,
+                EstadoRevision NVARCHAR(30) NOT NULL DEFAULT 'pendiente',
+                MotivoRechazo NVARCHAR(MAX) NULL,
+                CreadoEn DATETIME NOT NULL DEFAULT GETDATE(),
+                RevisadoPor INT NULL,
+                RevisadoEn DATETIME NULL,
+                EliminadoEn DATETIME NULL,
+                FOREIGN KEY (PublicacionId) REFERENCES Publicaciones(id),
+                FOREIGN KEY (VersionId) REFERENCES PublicacionVersiones(id),
+                FOREIGN KEY (UsuarioId) REFERENCES Usuarios(id)
+            )
+    """)
+    cursor.execute("""
+        IF NOT EXISTS (
+            SELECT 1 FROM sys.indexes
+            WHERE name = 'IX_PublicacionImagenes_Publica'
+              AND object_id = OBJECT_ID('PublicacionImagenes')
+        )
+            CREATE INDEX IX_PublicacionImagenes_Publica
+            ON PublicacionImagenes(PublicacionId, VersionId, EstadoRevision, Posicion)
+    """)
+    cursor.execute("""
+        IF OBJECT_ID('PublicacionRevisiones', 'U') IS NULL
+            CREATE TABLE PublicacionRevisiones (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                PublicacionId INT NOT NULL,
+                VersionId INT NOT NULL,
+                AdministradorId INT NOT NULL,
+                Accion NVARCHAR(60) NOT NULL,
+                EstadoAnterior NVARCHAR(40) NULL,
+                EstadoNuevo NVARCHAR(40) NOT NULL,
+                Observaciones NVARCHAR(MAX) NULL,
+                EsNotaInterna BIT NOT NULL DEFAULT 0,
+                CreadoEn DATETIME NOT NULL DEFAULT GETDATE(),
+                FOREIGN KEY (PublicacionId) REFERENCES Publicaciones(id),
+                FOREIGN KEY (VersionId) REFERENCES PublicacionVersiones(id),
+                FOREIGN KEY (AdministradorId) REFERENCES Usuarios(id)
+            )
+    """)
+    cursor.execute("""
+        IF OBJECT_ID('AlertasSistema', 'U') IS NULL
+            CREATE TABLE AlertasSistema (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                UsuarioId INT NULL,
+                RolDestino NVARCHAR(40) NULL,
+                Tipo NVARCHAR(80) NOT NULL,
+                Titulo NVARCHAR(180) NOT NULL,
+                Mensaje NVARCHAR(MAX) NOT NULL,
+                PublicacionId INT NULL,
+                VersionId INT NULL,
+                Leida BIT NOT NULL DEFAULT 0,
+                CreadoEn DATETIME NOT NULL DEFAULT GETDATE(),
+                LeidaEn DATETIME NULL,
+                FOREIGN KEY (UsuarioId) REFERENCES Usuarios(id)
+            )
+    """)
+    cursor.execute("""
         IF OBJECT_ID('Quejas', 'U') IS NULL
             CREATE TABLE Quejas (
                 id INT IDENTITY(1,1) PRIMARY KEY,
@@ -330,8 +504,26 @@ def ensure_control_schema(cursor):
     """)
     cursor.execute("""
         UPDATE Publicaciones
-        SET EstadoRevision = CASE WHEN Activa = 1 THEN 'aprobada' ELSE 'pendiente' END
-        WHERE EstadoRevision IS NULL OR EstadoRevision = ''
+        SET EstadoRevision = CASE WHEN Activa = 1 THEN 'aprobada' ELSE 'pendiente_revision' END
+        WHERE EstadoRevision IS NULL OR EstadoRevision = '' OR EstadoRevision = 'pendiente'
+    """)
+    cursor.execute("""
+        INSERT INTO PublicacionVersiones (
+            PublicacionId, VersionNumero, Titulo, Descripcion, Categoria, Precio, Ubicacion,
+            Experiencia, Habilidades, Disponibilidad, IncluyeMateriales, TipoPrecio, Estado,
+            AutorId, EsVersionPublica, CreadoEn, RevisadoEn
+        )
+        SELECT p.id, 1, p.Titulo, CAST(p.Descripcion AS NVARCHAR(MAX)), p.Categoria, p.Precio, p.Ubicacion,
+               p.Experiencia, p.Habilidades, p.Disponibilidad, p.IncluyeMateriales, p.TipoPrecio,
+               CASE WHEN p.Activa = 1 AND p.EstadoRevision = 'aprobada' THEN 'aprobada' ELSE 'pendiente_revision' END,
+               p.UsuarioId,
+               CASE WHEN p.Activa = 1 AND p.EstadoRevision = 'aprobada' THEN 1 ELSE 0 END,
+               p.FechaCreacion,
+               CASE WHEN p.Activa = 1 AND p.EstadoRevision = 'aprobada' THEN ISNULL(p.FechaRevision, p.FechaCreacion) ELSE NULL END
+        FROM Publicaciones p
+        WHERE NOT EXISTS (
+            SELECT 1 FROM PublicacionVersiones pv WHERE pv.PublicacionId = p.id
+        )
     """)
 
 
@@ -340,6 +532,201 @@ def audit_event(cursor, tipo_evento, entidad, entidad_id=None, detalle=None, usu
         INSERT INTO BitacoraAdmin (UsuarioId, ActorId, TipoEvento, Entidad, EntidadId, Detalle)
         VALUES (?, ?, ?, ?, ?, ?)
     """, (usuario_id, actor_id, tipo_evento, entidad, entidad_id, detalle))
+
+
+def crear_alerta(cursor, tipo, titulo, mensaje, publicacion_id=None, version_id=None, usuario_id=None, rol_destino=None):
+    cursor.execute("""
+        INSERT INTO AlertasSistema (UsuarioId, RolDestino, Tipo, Titulo, Mensaje, PublicacionId, VersionId)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (usuario_id, rol_destino, tipo, titulo, mensaje, publicacion_id, version_id))
+
+
+def obtener_siguiente_version(cursor, publicacion_id):
+    cursor.execute("SELECT COALESCE(MAX(VersionNumero), 0) + 1 FROM PublicacionVersiones WHERE PublicacionId = ?", (publicacion_id,))
+    return int(cursor.fetchone()[0])
+
+
+def crear_version_publicacion(cursor, publicacion_id, user_id, datos, estado='pendiente_revision'):
+    version_numero = obtener_siguiente_version(cursor, publicacion_id)
+    cursor.execute("""
+        INSERT INTO PublicacionVersiones (
+            PublicacionId, VersionNumero, Titulo, Descripcion, Categoria, Precio, Ubicacion,
+            Experiencia, Habilidades, Disponibilidad, IncluyeMateriales, TipoPrecio, Estado, AutorId
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        publicacion_id,
+        version_numero,
+        datos['titulo'],
+        datos['descripcion'],
+        datos['categoria'],
+        datos['precio'],
+        datos['ubicacion'],
+        datos['experiencia'],
+        datos['habilidades'],
+        datos['disponibilidad'],
+        datos['incluye_materiales'],
+        datos['tipo_precio'],
+        estado,
+        user_id
+    ))
+    cursor.execute("SELECT SCOPE_IDENTITY()")
+    return int(cursor.fetchone()[0])
+
+
+def obtener_version_publica_id(cursor, publicacion_id):
+    cursor.execute("""
+        SELECT TOP 1 id
+        FROM PublicacionVersiones
+        WHERE PublicacionId = ? AND EsVersionPublica = 1 AND Estado = 'aprobada'
+        ORDER BY VersionNumero DESC
+    """, (publicacion_id,))
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
+def obtener_ultima_version_id(cursor, publicacion_id):
+    cursor.execute("""
+        SELECT TOP 1 id
+        FROM PublicacionVersiones
+        WHERE PublicacionId = ?
+        ORDER BY VersionNumero DESC
+    """, (publicacion_id,))
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
+def sincronizar_publicacion_desde_version(cursor, publicacion_id, version_id, admin_id):
+    cursor.execute("""
+        SELECT Titulo, Descripcion, Categoria, Precio, Ubicacion, Experiencia, Habilidades,
+               Disponibilidad, IncluyeMateriales, TipoPrecio
+        FROM PublicacionVersiones
+        WHERE id = ? AND PublicacionId = ?
+    """, (version_id, publicacion_id))
+    version = cursor.fetchone()
+    if not version:
+        raise ValueError('Versión no encontrada para sincronizar.')
+
+    cursor.execute("UPDATE PublicacionVersiones SET EsVersionPublica = 0 WHERE PublicacionId = ?", (publicacion_id,))
+    cursor.execute("""
+        UPDATE PublicacionVersiones
+        SET Estado = 'aprobada', EsVersionPublica = 1, RevisadoPor = ?, RevisadoEn = GETDATE(), ActualizadoEn = GETDATE()
+        WHERE id = ?
+    """, (admin_id, version_id))
+    cursor.execute("""
+        UPDATE Publicaciones
+        SET Titulo = ?, Descripcion = ?, Categoria = ?, Precio = ?, Ubicacion = ?, Experiencia = ?,
+            Habilidades = ?, Disponibilidad = ?, IncluyeMateriales = ?, TipoPrecio = ?,
+            Activa = 1, EstadoRevision = 'aprobada', RevisadoPor = ?, FechaRevision = GETDATE(),
+            ComentarioRevision = NULL, FechaActualizacion = GETDATE()
+        WHERE id = ?
+    """, (
+        version[0], version[1], version[2], version[3], version[4], version[5],
+        version[6], version[7], version[8], version[9], admin_id, publicacion_id
+    ))
+    cursor.execute("""
+        UPDATE PublicacionImagenes
+        SET EstadoRevision = 'aprobada', RevisadoPor = ?, RevisadoEn = GETDATE()
+        WHERE VersionId = ? AND EstadoRevision = 'pendiente'
+    """, (admin_id, version_id))
+
+
+def guardar_imagenes_version(cursor, publicacion_id, version_id, user_id, imagenes):
+    if not imagenes:
+        return []
+    cursor.execute("""
+        SELECT COUNT(*)
+        FROM PublicacionImagenes
+        WHERE VersionId = ? AND EstadoRevision <> 'eliminada'
+    """, (version_id,))
+    existentes = int(cursor.fetchone()[0])
+    if existentes + len(imagenes) > MAX_PUBLICATION_IMAGES:
+        raise ValueError(f'Cada publicación puede tener máximo {MAX_PUBLICATION_IMAGES} imágenes por versión.')
+
+    os.makedirs(PUBLICACION_UPLOAD_FOLDER, exist_ok=True)
+    guardadas = []
+    for index, imagen in enumerate(imagenes, start=existentes):
+        valida, mensaje, meta = validar_imagen_publicacion(imagen)
+        if not valida:
+            raise ValueError(mensaje)
+
+        nombre_final = f"{publicacion_id}_{version_id}_{uuid.uuid4().hex}.{meta['extension']}"
+        ruta_archivo = os.path.join(PUBLICACION_UPLOAD_FOLDER, nombre_final)
+        imagen.save(ruta_archivo)
+        ruta_relativa = f"/static/uploads/publicaciones/{nombre_final}"
+        cursor.execute("""
+            INSERT INTO PublicacionImagenes (
+                PublicacionId, VersionId, UsuarioId, ImagenUrl, NombreArchivo, MimeType,
+                TamanoBytes, Posicion, EsPrincipal, EstadoRevision
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pendiente')
+        """, (
+            publicacion_id,
+            version_id,
+            user_id,
+            ruta_relativa,
+            nombre_final,
+            meta['mime'],
+            meta['size'],
+            index,
+            1 if index == 0 else 0
+        ))
+        cursor.execute("SELECT SCOPE_IDENTITY()")
+        imagen_id = int(cursor.fetchone()[0])
+        guardadas.append({'id': imagen_id, 'url': ruta_relativa})
+        audit_event(cursor, 'imagen_subida', 'PublicacionImagenes', imagen_id,
+                    f'Imagen subida para publicación {publicacion_id}, versión {version_id}.',
+                    usuario_id=user_id, actor_id=user_id)
+    return guardadas
+
+
+def leer_datos_publicacion_form():
+    titulo = request.form.get('titulo', '').strip()
+    descripcion = request.form.get('descripcion', '').strip()
+    categoria = request.form.get('categoria', '').strip()
+    precio = request.form.get('salario', '').strip()
+    ubicacion = request.form.get('ubicacion', '').strip()
+    experiencia = request.form.get('experiencia', '').strip()
+    habilidades = request.form.get('habilidades', '').strip()
+    disponibilidad = request.form.get('disponibilidad', '').strip()
+    tipo_precio = request.form.get('tipo_precio', 'hora')
+    incluye_materiales = request.form.get('incluye_materiales') == 'on'
+
+    if not titulo:
+        raise ValueError('El título es obligatorio.')
+    if not descripcion:
+        raise ValueError('La descripción es obligatoria.')
+    if not categoria:
+        raise ValueError('La categoría es obligatoria.')
+    if not ubicacion:
+        raise ValueError('La ubicación es obligatoria.')
+    if not experiencia:
+        raise ValueError('La experiencia es obligatoria.')
+
+    precio_decimal = None
+    if precio:
+        try:
+            precio_decimal = float(precio)
+        except ValueError as exc:
+            raise ValueError('El precio debe ser un número válido.') from exc
+
+    try:
+        experiencia_int = int(experiencia)
+    except ValueError as exc:
+        raise ValueError('La experiencia debe ser un número válido.') from exc
+
+    return {
+        'titulo': titulo,
+        'descripcion': descripcion,
+        'categoria': categoria,
+        'precio': precio_decimal,
+        'ubicacion': ubicacion,
+        'experiencia': experiencia_int,
+        'habilidades': habilidades,
+        'disponibilidad': disponibilidad,
+        'tipo_precio': tipo_precio,
+        'incluye_materiales': incluye_materiales
+    }
 
 
 # ==================== RUTAS PRINCIPALES ====================
@@ -820,57 +1207,38 @@ def crear_publicacion():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-
-        titulo = request.form.get('titulo', '').strip()
-        descripcion = request.form.get('descripcion', '').strip()
-        categoria = request.form.get('categoria', '').strip()
-        precio = request.form.get('salario', '').strip()
-        ubicacion = request.form.get('ubicacion', '').strip()
-        experiencia = request.form.get('experiencia', '').strip()
-        habilidades = request.form.get('habilidades', '').strip()
-        disponibilidad = request.form.get('disponibilidad', '').strip()
-        tipo_precio = request.form.get('tipo_precio', 'hora')
-        incluye_materiales = request.form.get('incluye_materiales') == 'on'
-
-        if not titulo:
-            return jsonify({'success': False, 'message': 'El título es obligatorio.'}), 400
-        if not descripcion:
-            return jsonify({'success': False, 'message': 'La descripción es obligatoria.'}), 400
-        if not categoria:
-            return jsonify({'success': False, 'message': 'La categoría es obligatoria.'}), 400
-        if not ubicacion:
-            return jsonify({'success': False, 'message': 'La ubicación es obligatoria.'}), 400
-        if not experiencia:
-            return jsonify({'success': False, 'message': 'La experiencia es obligatoria.'}), 400
-
-        precio_decimal = None
-        if precio:
-            try:
-                precio_decimal = float(precio)
-            except ValueError:
-                return jsonify({'success': False, 'message': 'El precio debe ser un número válido.'}), 400
-
-        try:
-            experiencia_int = int(experiencia)
-        except ValueError:
-            return jsonify({'success': False, 'message': 'La experiencia debe ser un número válido.'}), 400
+        ensure_control_schema(cursor)
+        datos = leer_datos_publicacion_form()
+        imagenes = request.files.getlist('imagenes')
 
         sql_insert = """
             INSERT INTO Publicaciones (UsuarioId, Titulo, Descripcion, Categoria, Precio, Ubicacion,
                                        Experiencia, Habilidades, Disponibilidad, IncluyeMateriales, TipoPrecio,
                                        Activa, EstadoRevision, ComentarioRevision)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pendiente', NULL)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pendiente_revision', NULL)
         """
-        cursor.execute(sql_insert, (user_id, titulo, descripcion, categoria, precio_decimal, ubicacion,
-                                    experiencia_int, habilidades, disponibilidad, incluye_materiales, tipo_precio))
+        cursor.execute(sql_insert, (
+            user_id, datos['titulo'], datos['descripcion'], datos['categoria'], datos['precio'],
+            datos['ubicacion'], datos['experiencia'], datos['habilidades'], datos['disponibilidad'],
+            datos['incluye_materiales'], datos['tipo_precio']
+        ))
         cursor.execute("SELECT SCOPE_IDENTITY()")
         nueva_publicacion_id = int(cursor.fetchone()[0])
-        audit_event(cursor, 'publicacion_creada_pendiente', 'Publicaciones', nueva_publicacion_id,
-                    f"Publicación creada por prestador y enviada a revisión: {titulo}",
+        version_id = crear_version_publicacion(cursor, nueva_publicacion_id, user_id, datos)
+        guardar_imagenes_version(cursor, nueva_publicacion_id, version_id, user_id, imagenes)
+        audit_event(cursor, 'publicacion_enviada_revision', 'Publicaciones', nueva_publicacion_id,
+                    f"Publicación creada por prestador y enviada a revisión: {datos['titulo']}",
                     usuario_id=user_id, actor_id=user_id)
+        crear_alerta(cursor, 'publicacion_revision', 'Nueva publicación pendiente',
+                     f"{datos['titulo']} fue enviada a revisión administrativa.",
+                     publicacion_id=nueva_publicacion_id, version_id=version_id, rol_destino='administrador')
         conn.commit()
         return jsonify({'success': True, 'message': 'Publicación enviada a revisión del administrador. Aparecerá en marketplace cuando sea aprobada.'}), 200
 
+    except ValueError as e:
+        if conn:
+            conn.rollback()
+        return jsonify({'success': False, 'message': str(e)}), 400
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
         print(f"Error de base de datos al crear publicación (sqlstate: {sqlstate}): {ex}")
@@ -898,12 +1266,21 @@ def mis_publicaciones():
 
         if tipo_usuario == 'prestador':
             cursor.execute("""
-                SELECT id, Titulo, Descripcion, Categoria, Precio, Ubicacion, Experiencia,
-                       Habilidades, Disponibilidad, IncluyeMateriales, TipoPrecio, FechaCreacion, Activa,
-                       EstadoRevision, ComentarioRevision, FechaRevision, FechaActualizacion
-                FROM Publicaciones
-                WHERE UsuarioId = ?
-                ORDER BY FechaCreacion DESC
+                SELECT pub.id, v.Titulo, v.Descripcion, v.Categoria, v.Precio, v.Ubicacion, v.Experiencia,
+                       v.Habilidades, v.Disponibilidad, v.IncluyeMateriales, v.TipoPrecio, v.CreadoEn, pub.Activa,
+                       v.Estado, COALESCE(v.Observaciones, v.MotivoRechazo, pub.ComentarioRevision), v.RevisadoEn, v.ActualizadoEn,
+                       v.id, v.VersionNumero,
+                       (SELECT TOP 1 pv.VersionNumero FROM PublicacionVersiones pv WHERE pv.PublicacionId = pub.id AND pv.EsVersionPublica = 1 ORDER BY pv.VersionNumero DESC) AS VersionPublica,
+                       (SELECT TOP 1 ImagenUrl FROM PublicacionImagenes img WHERE img.VersionId = v.id AND img.EstadoRevision <> 'eliminada' ORDER BY img.EsPrincipal DESC, img.Posicion) AS ImagenPrincipal
+                FROM Publicaciones pub
+                INNER JOIN PublicacionVersiones v ON v.id = (
+                    SELECT TOP 1 pv.id
+                    FROM PublicacionVersiones pv
+                    WHERE pv.PublicacionId = pub.id
+                    ORDER BY pv.VersionNumero DESC
+                )
+                WHERE pub.UsuarioId = ?
+                ORDER BY v.CreadoEn DESC
             """, (user_id,))
         else:
             cursor.execute("""
@@ -911,7 +1288,10 @@ def mis_publicaciones():
                        Habilidades, Disponibilidad, IncluyeMateriales, TipoPrecio, FechaCreacion, Activa,
                        EstadoRevision, ComentarioRevision, FechaRevision, FechaActualizacion
                 FROM Publicaciones
-                WHERE Activa = 1 AND EstadoRevision = 'aprobada'
+                WHERE Activa = 1 AND EXISTS (
+                    SELECT 1 FROM PublicacionVersiones pv
+                    WHERE pv.PublicacionId = Publicaciones.id AND pv.Estado = 'aprobada' AND pv.EsVersionPublica = 1
+                )
                 ORDER BY FechaCreacion DESC
             """)
 
@@ -935,7 +1315,11 @@ def mis_publicaciones():
                 'estado_revision': pub[13],
                 'comentario_revision': pub[14] or '',
                 'fecha_revision': fmt_datetime(pub[15]),
-                'fecha_actualizacion': fmt_datetime(pub[16])
+                'fecha_actualizacion': fmt_datetime(pub[16]),
+                'version_id': pub[17] if len(pub) > 17 else None,
+                'version_numero': pub[18] if len(pub) > 18 else None,
+                'version_publica': pub[19] if len(pub) > 19 else None,
+                'imagen_principal': pub[20] if len(pub) > 20 else None
             })
 
         return jsonify({'success': True, 'publicaciones': publicaciones_list}), 200
@@ -963,11 +1347,20 @@ def publicaciones_activas():
                    p.Experiencia, p.Habilidades, p.Disponibilidad, p.IncluyeMateriales,
                    p.TipoPrecio, p.FechaCreacion,
                    per.Nombre, per.ApellidoP, per.ApellidoM, per.Telefono, per.FotoPerfil,
-                   u.Email
+                   u.Email,
+                   (SELECT TOP 1 img.ImagenUrl
+                    FROM PublicacionImagenes img
+                    INNER JOIN PublicacionVersiones pv ON img.VersionId = pv.id
+                    WHERE img.PublicacionId = p.id AND pv.EsVersionPublica = 1
+                      AND img.EstadoRevision = 'aprobada'
+                    ORDER BY img.EsPrincipal DESC, img.Posicion) AS ImagenPrincipal
             FROM Publicaciones p
             INNER JOIN Usuarios u ON p.UsuarioId = u.id
             INNER JOIN Personas per ON u.id = per.UsuarioId
-            WHERE p.Activa = 1 AND p.EstadoRevision = 'aprobada'
+            WHERE p.Activa = 1 AND EXISTS (
+                SELECT 1 FROM PublicacionVersiones pv
+                WHERE pv.PublicacionId = p.id AND pv.Estado = 'aprobada' AND pv.EsVersionPublica = 1
+            )
             ORDER BY p.FechaCreacion DESC
         """)
         publicaciones = cursor.fetchall()
@@ -995,7 +1388,8 @@ def publicaciones_activas():
                 'prestador_nombre': f"{pub[12]} {pub[13]} {pub[14]}",
                 'prestador_telefono': descifrar_dato(pub[15]),
                 'prestador_foto': pub[16],
-                'prestador_email': pub[17]
+                'prestador_email': pub[17],
+                'imagen_principal': pub[18]
             })
 
         return jsonify({'success': True, 'publicaciones': publicaciones_list}), 200
@@ -1056,16 +1450,26 @@ def detalles_publicacion(publicacion_id):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        ensure_control_schema(cursor)
         cursor.execute("""
             SELECT p.id, p.Titulo, p.Descripcion, p.Categoria, p.Precio, p.Ubicacion,
                    p.Experiencia, p.Habilidades, p.Disponibilidad, p.IncluyeMateriales,
                    p.TipoPrecio, p.FechaCreacion,
                    per.Nombre, per.ApellidoP, per.ApellidoM, per.Telefono,
-                   u.Email, u.id as PrestadorId
+                   u.Email, u.id as PrestadorId,
+                   (SELECT TOP 1 img.ImagenUrl
+                    FROM PublicacionImagenes img
+                    INNER JOIN PublicacionVersiones pv ON img.VersionId = pv.id
+                    WHERE img.PublicacionId = p.id AND pv.EsVersionPublica = 1
+                      AND img.EstadoRevision = 'aprobada'
+                    ORDER BY img.EsPrincipal DESC, img.Posicion) AS ImagenPrincipal
             FROM Publicaciones p
             INNER JOIN Usuarios u ON p.UsuarioId = u.id
             INNER JOIN Personas per ON u.id = per.UsuarioId
-            WHERE p.id = ? AND p.Activa = 1 AND p.EstadoRevision = 'aprobada'
+            WHERE p.id = ? AND p.Activa = 1 AND EXISTS (
+                SELECT 1 FROM PublicacionVersiones pv
+                WHERE pv.PublicacionId = p.id AND pv.Estado = 'aprobada' AND pv.EsVersionPublica = 1
+            )
         """, (publicacion_id,))
         publicacion = cursor.fetchone()
         if not publicacion:
@@ -1093,7 +1497,8 @@ def detalles_publicacion(publicacion_id):
             'prestador_nombre': f"{publicacion[12]} {publicacion[13]} {publicacion[14]}",
             'prestador_telefono': descifrar_dato(publicacion[15]),
             'prestador_email': publicacion[16],
-            'prestador_id': publicacion[17]
+            'prestador_id': publicacion[17],
+            'imagen_principal': publicacion[18]
         }
         return jsonify({'success': True, 'publicacion': publicacion_detalles}), 200
 
@@ -1125,11 +1530,20 @@ def buscar_publicaciones():
                    p.Experiencia, p.Habilidades, p.Disponibilidad, p.IncluyeMateriales,
                    p.TipoPrecio, p.FechaCreacion,
                    per.Nombre, per.ApellidoP, per.ApellidoM, per.Telefono, per.FotoPerfil,
-                   u.Email
+                   u.Email,
+                   (SELECT TOP 1 img.ImagenUrl
+                    FROM PublicacionImagenes img
+                    INNER JOIN PublicacionVersiones pv ON img.VersionId = pv.id
+                    WHERE img.PublicacionId = p.id AND pv.EsVersionPublica = 1
+                      AND img.EstadoRevision = 'aprobada'
+                    ORDER BY img.EsPrincipal DESC, img.Posicion) AS ImagenPrincipal
             FROM Publicaciones p
             INNER JOIN Usuarios u ON p.UsuarioId = u.id
             INNER JOIN Personas per ON u.id = per.UsuarioId
-            WHERE p.Activa = 1 AND p.EstadoRevision = 'aprobada'
+            WHERE p.Activa = 1 AND EXISTS (
+                SELECT 1 FROM PublicacionVersiones pv
+                WHERE pv.PublicacionId = p.id AND pv.Estado = 'aprobada' AND pv.EsVersionPublica = 1
+            )
         """
         params = []
 
@@ -1185,7 +1599,8 @@ def buscar_publicaciones():
                 'prestador_nombre': f"{pub[12]} {pub[13]} {pub[14]}",
                 'prestador_telefono': descifrar_dato(pub[15]),
                 'prestador_foto': pub[16],
-                'prestador_email': pub[17]
+                'prestador_email': pub[17],
+                'imagen_principal': pub[18]
             })
 
         return jsonify({'success': True, 'publicaciones': publicaciones_list}), 200
@@ -1255,6 +1670,17 @@ def portafolio_publicacion(publicacion_id):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        ensure_control_schema(cursor)
+        cursor.execute("""
+            SELECT 1
+            FROM Publicaciones p
+            WHERE p.id = ? AND p.Activa = 1 AND EXISTS (
+                SELECT 1 FROM PublicacionVersiones pv
+                WHERE pv.PublicacionId = p.id AND pv.Estado = 'aprobada' AND pv.EsVersionPublica = 1
+            )
+        """, (publicacion_id,))
+        if not cursor.fetchone():
+            return jsonify({'success': False, 'message': 'Publicación no encontrada.'}), 404
         cursor.execute("""
             SELECT id, Titulo, Descripcion, ImagenUrl, CreadoEn
             FROM PortafolioTrabajos
@@ -1759,61 +2185,44 @@ def editar_publicacion(publicacion_id):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id FROM Publicaciones WHERE id = ? AND UsuarioId = ?", (publicacion_id, user_id))
-        if not cursor.fetchone():
+        ensure_control_schema(cursor)
+        cursor.execute("SELECT id, Activa, EstadoRevision FROM Publicaciones WHERE id = ? AND UsuarioId = ?", (publicacion_id, user_id))
+        publicacion = cursor.fetchone()
+        if not publicacion:
             return jsonify({'success': False, 'message': 'Publicación no encontrada o no tienes permisos para editarla.'}), 404
 
-        titulo = request.form.get('titulo', '').strip()
-        descripcion = request.form.get('descripcion', '').strip()
-        categoria = request.form.get('categoria', '').strip()
-        precio = request.form.get('salario', '').strip()
-        ubicacion = request.form.get('ubicacion', '').strip()
-        experiencia = request.form.get('experiencia', '').strip()
-        habilidades = request.form.get('habilidades', '').strip()
-        disponibilidad = request.form.get('disponibilidad', '').strip()
-        tipo_precio = request.form.get('tipo_precio', 'hora')
-        incluye_materiales = request.form.get('incluye_materiales') == 'on'
+        datos = leer_datos_publicacion_form()
+        imagenes = request.files.getlist('imagenes')
+        version_id = crear_version_publicacion(cursor, publicacion_id, user_id, datos)
+        guardar_imagenes_version(cursor, publicacion_id, version_id, user_id, imagenes)
 
-        if not titulo:
-            return jsonify({'success': False, 'message': 'El título es obligatorio.'}), 400
-        if not descripcion:
-            return jsonify({'success': False, 'message': 'La descripción es obligatoria.'}), 400
-        if not categoria:
-            return jsonify({'success': False, 'message': 'La categoría es obligatoria.'}), 400
-        if not ubicacion:
-            return jsonify({'success': False, 'message': 'La ubicación es obligatoria.'}), 400
-        if not experiencia:
-            return jsonify({'success': False, 'message': 'La experiencia es obligatoria.'}), 400
+        if not publicacion[1]:
+            cursor.execute("""
+                UPDATE Publicaciones
+                SET Titulo = ?, Descripcion = ?, Categoria = ?, Precio = ?, Ubicacion = ?,
+                    Experiencia = ?, Habilidades = ?, Disponibilidad = ?, IncluyeMateriales = ?, TipoPrecio = ?,
+                    EstadoRevision = 'pendiente_revision', RevisadoPor = NULL, FechaRevision = NULL,
+                    ComentarioRevision = NULL, FechaActualizacion = GETDATE()
+                WHERE id = ? AND UsuarioId = ?
+            """, (
+                datos['titulo'], datos['descripcion'], datos['categoria'], datos['precio'], datos['ubicacion'],
+                datos['experiencia'], datos['habilidades'], datos['disponibilidad'], datos['incluye_materiales'],
+                datos['tipo_precio'], publicacion_id, user_id
+            ))
 
-        precio_decimal = None
-        if precio:
-            try:
-                precio_decimal = float(precio)
-            except ValueError:
-                return jsonify({'success': False, 'message': 'El precio debe ser un número válido.'}), 400
-
-        try:
-            experiencia_int = int(experiencia)
-        except ValueError:
-            return jsonify({'success': False, 'message': 'La experiencia debe ser un número válido.'}), 400
-
-        sql_update = """
-            UPDATE Publicaciones
-            SET Titulo = ?, Descripcion = ?, Categoria = ?, Precio = ?, Ubicacion = ?,
-                Experiencia = ?, Habilidades = ?, Disponibilidad = ?, IncluyeMateriales = ?, TipoPrecio = ?,
-                Activa = 0, EstadoRevision = 'pendiente', RevisadoPor = NULL, FechaRevision = NULL,
-                ComentarioRevision = NULL, FechaActualizacion = GETDATE()
-            WHERE id = ? AND UsuarioId = ?
-        """
-        cursor.execute(sql_update, (titulo, descripcion, categoria, precio_decimal, ubicacion,
-                                    experiencia_int, habilidades, disponibilidad, incluye_materiales, tipo_precio,
-                                    publicacion_id, user_id))
-        audit_event(cursor, 'publicacion_editada_pendiente', 'Publicaciones', publicacion_id,
-                    f"Publicación editada y enviada nuevamente a revisión: {titulo}",
+        audit_event(cursor, 'version_creada', 'PublicacionVersiones', version_id,
+                    f"Versión enviada a revisión: {datos['titulo']}",
                     usuario_id=user_id, actor_id=user_id)
+        crear_alerta(cursor, 'publicacion_revision', 'Nueva versión pendiente',
+                     f"{datos['titulo']} tiene cambios pendientes de revisión.",
+                     publicacion_id=publicacion_id, version_id=version_id, rol_destino='administrador')
         conn.commit()
-        return jsonify({'success': True, 'message': 'Publicación actualizada y enviada nuevamente a revisión del administrador.'}), 200
+        return jsonify({'success': True, 'message': 'Los cambios se guardaron como versión pendiente. La versión pública aprobada seguirá visible hasta que el administrador apruebe esta actualización.'}), 200
 
+    except ValueError as e:
+        if conn:
+            conn.rollback()
+        return jsonify({'success': False, 'message': str(e)}), 400
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
         print(f"Error de base de datos al editar publicación (sqlstate: {sqlstate}): {ex}")
@@ -2457,9 +2866,9 @@ def admin_resumen():
         publicaciones_activas = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM Publicaciones WHERE Activa = 0")
         publicaciones_inactivas = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM Publicaciones WHERE EstadoRevision = 'pendiente'")
+        cursor.execute("SELECT COUNT(*) FROM PublicacionVersiones WHERE Estado = 'pendiente_revision'")
         publicaciones_pendientes = cursor.fetchone()[0]
-        cursor.execute("SELECT COUNT(*) FROM Publicaciones WHERE EstadoRevision = 'rechazada'")
+        cursor.execute("SELECT COUNT(*) FROM PublicacionVersiones WHERE Estado = 'rechazada'")
         publicaciones_rechazadas = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM SolicitudesServicios")
         solicitudes = cursor.fetchone()[0]
@@ -2573,14 +2982,22 @@ def admin_publicaciones():
         ensure_control_schema(cursor)
         cursor.execute("""
             SELECT TOP 40
-                pub.id, pub.Titulo, pub.Categoria, pub.Precio, pub.Activa, pub.FechaCreacion,
+                pub.id, v.Titulo, v.Categoria, v.Precio, pub.Activa, pub.FechaCreacion,
                 per.Nombre, per.ApellidoP, per.ApellidoM, u.Email,
-                pub.EstadoRevision, pub.ComentarioRevision, pub.FechaRevision, pub.Descripcion,
-                pub.Ubicacion, pub.Experiencia, pub.Habilidades, pub.Disponibilidad, pub.IncluyeMateriales
+                v.Estado, COALESCE(v.Observaciones, v.MotivoRechazo, pub.ComentarioRevision), v.RevisadoEn, v.Descripcion,
+                v.Ubicacion, v.Experiencia, v.Habilidades, v.Disponibilidad, v.IncluyeMateriales,
+                v.id AS VersionId, v.VersionNumero, v.EsVersionPublica,
+                (SELECT TOP 1 ImagenUrl FROM PublicacionImagenes img WHERE img.VersionId = v.id AND img.EstadoRevision <> 'eliminada' ORDER BY img.EsPrincipal DESC, img.Posicion) AS ImagenPrincipal
             FROM Publicaciones pub
+            INNER JOIN PublicacionVersiones v ON v.id = (
+                SELECT TOP 1 pv.id
+                FROM PublicacionVersiones pv
+                WHERE pv.PublicacionId = pub.id
+                ORDER BY CASE WHEN pv.Estado = 'pendiente_revision' THEN 0 ELSE 1 END, pv.VersionNumero DESC
+            )
             INNER JOIN Usuarios u ON pub.UsuarioId = u.id
             LEFT JOIN Personas per ON u.id = per.UsuarioId
-            ORDER BY CASE WHEN pub.EstadoRevision = 'pendiente' THEN 0 ELSE 1 END, pub.FechaCreacion DESC
+            ORDER BY CASE WHEN v.Estado = 'pendiente_revision' THEN 0 ELSE 1 END, v.CreadoEn DESC
         """)
         publicaciones = [{
             'id': row[0],
@@ -2599,13 +3016,134 @@ def admin_publicaciones():
             'experiencia': row[15],
             'habilidades': row[16] or '',
             'disponibilidad': row[17] or '',
-            'incluye_materiales': bool(row[18])
+            'incluye_materiales': bool(row[18]),
+            'version_id': row[19],
+            'version_numero': row[20],
+            'es_version_publica': bool(row[21]),
+            'imagen_principal': row[22]
         } for row in cursor.fetchall()]
 
         return jsonify({'success': True, 'publicaciones': publicaciones}), 200
 
     except Exception as e:
         print(f"Error en admin_publicaciones: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/admin/publicaciones/<int:publicacion_id>', methods=['GET'])
+def admin_detalle_publicacion(publicacion_id):
+    unauthorized = require_admin_session()
+    if unauthorized:
+        return unauthorized
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_control_schema(cursor)
+        cursor.execute("""
+            SELECT pub.id, pub.UsuarioId, u.Email, u.Activo, per.Nombre, per.ApellidoP, per.ApellidoM,
+                   pub.Activa, pub.FechaCreacion
+            FROM Publicaciones pub
+            INNER JOIN Usuarios u ON pub.UsuarioId = u.id
+            LEFT JOIN Personas per ON u.id = per.UsuarioId
+            WHERE pub.id = ?
+        """, (publicacion_id,))
+        pub = cursor.fetchone()
+        if not pub:
+            return jsonify({'success': False, 'message': 'Publicación no encontrada.'}), 404
+
+        cursor.execute("""
+            SELECT id, VersionNumero, Titulo, Descripcion, Categoria, Precio, Ubicacion, Experiencia,
+                   Habilidades, Disponibilidad, IncluyeMateriales, TipoPrecio, Estado, Observaciones,
+                   MotivoRechazo, EsVersionPublica, CreadoEn, RevisadoEn
+            FROM PublicacionVersiones
+            WHERE PublicacionId = ?
+            ORDER BY VersionNumero DESC
+        """, (publicacion_id,))
+        versiones = []
+        for row in cursor.fetchall():
+            versiones.append({
+                'id': row[0],
+                'version_numero': row[1],
+                'titulo': row[2],
+                'descripcion': row[3],
+                'categoria': row[4],
+                'precio': float(row[5]) if row[5] else None,
+                'ubicacion': row[6],
+                'experiencia': row[7],
+                'habilidades': row[8],
+                'disponibilidad': row[9],
+                'incluye_materiales': bool(row[10]),
+                'tipo_precio': row[11],
+                'estado': row[12],
+                'observaciones': row[13] or '',
+                'motivo_rechazo': row[14] or '',
+                'es_version_publica': bool(row[15]),
+                'creado_en': fmt_datetime(row[16]),
+                'revisado_en': fmt_datetime(row[17])
+            })
+
+        cursor.execute("""
+            SELECT id, VersionId, ImagenUrl, Posicion, EsPrincipal, EstadoRevision, MotivoRechazo, CreadoEn
+            FROM PublicacionImagenes
+            WHERE PublicacionId = ? AND EstadoRevision <> 'eliminada'
+            ORDER BY VersionId DESC, Posicion
+        """, (publicacion_id,))
+        imagenes = [{
+            'id': row[0],
+            'version_id': row[1],
+            'imagen_url': row[2],
+            'posicion': row[3],
+            'es_principal': bool(row[4]),
+            'estado_revision': row[5],
+            'motivo_rechazo': row[6] or '',
+            'creado_en': fmt_datetime(row[7])
+        } for row in cursor.fetchall()]
+
+        cursor.execute("""
+            SELECT r.id, r.Accion, r.EstadoAnterior, r.EstadoNuevo, r.Observaciones, r.CreadoEn,
+                   u.Email
+            FROM PublicacionRevisiones r
+            INNER JOIN Usuarios u ON r.AdministradorId = u.id
+            WHERE r.PublicacionId = ?
+            ORDER BY r.CreadoEn DESC
+        """, (publicacion_id,))
+        revisiones = [{
+            'id': row[0],
+            'accion': row[1],
+            'estado_anterior': row[2],
+            'estado_nuevo': row[3],
+            'observaciones': row[4] or '',
+            'creado_en': fmt_datetime(row[5]),
+            'admin_email': row[6]
+        } for row in cursor.fetchall()]
+
+        return jsonify({
+            'success': True,
+            'publicacion': {
+                'id': pub[0],
+                'activa': bool(pub[7]),
+                'fecha_creacion': fmt_datetime(pub[8]),
+                'prestador': {
+                    'id': pub[1],
+                    'email': pub[2],
+                    'activo': bool(pub[3]),
+                    'nombre': f"{pub[4] or ''} {pub[5] or ''} {pub[6] or ''}".strip() or pub[2]
+                },
+                'version_publica': next((item for item in versiones if item['es_version_publica']), None),
+                'version_actual': versiones[0] if versiones else None,
+                'versiones': versiones,
+                'imagenes': imagenes,
+                'revisiones': revisiones
+            }
+        }), 200
+
+    except Exception as e:
+        print(f"Error en admin_detalle_publicacion: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
     finally:
         if conn:
@@ -2733,11 +3271,19 @@ def admin_revisar_publicacion(publicacion_id):
     data = request.get_json(silent=True) or {}
     estado = (data.get('estado') or '').strip().lower()
     comentario = (data.get('comentario') or '').strip()
+    version_id = data.get('version_id')
 
-    if estado not in ('aprobada', 'rechazada'):
+    acciones_validas = {
+        'aprobada': 'aprobar',
+        'rechazada': 'rechazar',
+        'correcciones_solicitadas': 'solicitar_correcciones',
+        'suspendida': 'suspender',
+        'oculta': 'ocultar'
+    }
+    if estado not in acciones_validas:
         return jsonify({'success': False, 'message': 'Estado de revisión no válido.'}), 400
-    if estado == 'rechazada' and not comentario:
-        return jsonify({'success': False, 'message': 'Agrega un motivo para rechazar la publicación.'}), 400
+    if estado in ('rechazada', 'correcciones_solicitadas', 'suspendida', 'oculta') and not comentario:
+        return jsonify({'success': False, 'message': 'Agrega un motivo u observación para esta acción.'}), 400
 
     conn = None
     try:
@@ -2749,13 +3295,64 @@ def admin_revisar_publicacion(publicacion_id):
         if not publicacion:
             return jsonify({'success': False, 'message': 'Publicación no encontrada.'}), 404
 
-        activa = 1 if estado == 'aprobada' else 0
+        if version_id:
+            cursor.execute("SELECT id, Estado FROM PublicacionVersiones WHERE id = ? AND PublicacionId = ?", (version_id, publicacion_id))
+        else:
+            cursor.execute("""
+                SELECT TOP 1 id, Estado
+                FROM PublicacionVersiones
+                WHERE PublicacionId = ?
+                ORDER BY CASE WHEN Estado = 'pendiente_revision' THEN 0 ELSE 1 END, VersionNumero DESC
+            """, (publicacion_id,))
+        version = cursor.fetchone()
+        if not version:
+            return jsonify({'success': False, 'message': 'Versión no encontrada.'}), 404
+
+        estado_anterior = version[1]
+        version_id = version[0]
+        if estado == 'aprobada':
+            sincronizar_publicacion_desde_version(cursor, publicacion_id, version_id, session.get('user_id'))
+            observaciones_set = comentario or None
+            motivo_set = None
+        else:
+            observaciones_set = comentario if estado == 'correcciones_solicitadas' else None
+            motivo_set = comentario if estado in ('rechazada', 'suspendida', 'oculta') else None
+            cursor.execute("""
+                UPDATE PublicacionVersiones
+                SET Estado = ?, RevisadoPor = ?, RevisadoEn = GETDATE(), ActualizadoEn = GETDATE(),
+                    Observaciones = ?, MotivoRechazo = ?
+                WHERE id = ?
+            """, (estado, session.get('user_id'), observaciones_set, motivo_set, version_id))
+            public_version_id = obtener_version_publica_id(cursor, publicacion_id)
+            if estado in ('suspendida', 'oculta') or not public_version_id:
+                cursor.execute("""
+                    UPDATE Publicaciones
+                    SET Activa = 0, EstadoRevision = ?, RevisadoPor = ?, FechaRevision = GETDATE(),
+                        ComentarioRevision = ?, FechaActualizacion = GETDATE()
+                    WHERE id = ?
+                """, (estado, session.get('user_id'), comentario, publicacion_id))
+
+        cursor.execute("""
+            INSERT INTO PublicacionRevisiones (
+                PublicacionId, VersionId, AdministradorId, Accion, EstadoAnterior, EstadoNuevo, Observaciones
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (publicacion_id, version_id, session.get('user_id'), acciones_validas[estado], estado_anterior, estado, comentario or None))
+        if estado == 'aprobada':
+            cursor.execute("""
+                UPDATE PublicacionVersiones
+                SET Observaciones = ?, MotivoRechazo = NULL
+                WHERE id = ?
+            """, (observaciones_set, version_id))
         cursor.execute("""
             UPDATE Publicaciones
-            SET EstadoRevision = ?, Activa = ?, RevisadoPor = ?, FechaRevision = GETDATE(),
-                ComentarioRevision = ?, FechaActualizacion = GETDATE()
+            SET EstadoRevision = CASE WHEN Activa = 1 THEN 'aprobada' ELSE ? END,
+                ComentarioRevision = ?
             WHERE id = ?
-        """, (estado, activa, session.get('user_id'), comentario or None, publicacion_id))
+        """, (estado, comentario or None, publicacion_id))
+        crear_alerta(cursor, 'publicacion_decision', f"Publicación {estado}",
+                     comentario or f"Tu publicación fue marcada como {estado}.",
+                     publicacion_id=publicacion_id, version_id=version_id, usuario_id=publicacion[0])
         audit_event(cursor, f'publicacion_{estado}', 'Publicaciones', publicacion_id,
                     comentario or f"Publicación {estado} por administrador.",
                     usuario_id=publicacion[0], actor_id=session.get('user_id'))
@@ -2764,6 +3361,204 @@ def admin_revisar_publicacion(publicacion_id):
 
     except Exception as e:
         print(f"Error en admin_revisar_publicacion: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/admin/publicaciones/<int:publicacion_id>/reactivar', methods=['POST'])
+def admin_reactivar_publicacion(publicacion_id):
+    unauthorized = require_admin_session()
+    if unauthorized:
+        return unauthorized
+
+    data = request.get_json(silent=True) or {}
+    comentario = (data.get('comentario') or '').strip()
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_control_schema(cursor)
+        public_version_id = obtener_version_publica_id(cursor, publicacion_id)
+        if not public_version_id:
+            return jsonify({'success': False, 'message': 'No hay una versión aprobada para reactivar.'}), 400
+        cursor.execute("SELECT UsuarioId FROM Publicaciones WHERE id = ?", (publicacion_id,))
+        publicacion = cursor.fetchone()
+        if not publicacion:
+            return jsonify({'success': False, 'message': 'Publicación no encontrada.'}), 404
+        cursor.execute("""
+            UPDATE Publicaciones
+            SET Activa = 1, EstadoRevision = 'aprobada', RevisadoPor = ?, FechaRevision = GETDATE(),
+                ComentarioRevision = ?, FechaActualizacion = GETDATE()
+            WHERE id = ?
+        """, (session.get('user_id'), comentario or None, publicacion_id))
+        cursor.execute("""
+            INSERT INTO PublicacionRevisiones (
+                PublicacionId, VersionId, AdministradorId, Accion, EstadoAnterior, EstadoNuevo, Observaciones
+            )
+            VALUES (?, ?, ?, 'reactivar', 'oculta', 'aprobada', ?)
+        """, (publicacion_id, public_version_id, session.get('user_id'), comentario or None))
+        crear_alerta(cursor, 'publicacion_decision', 'Publicación reactivada',
+                     comentario or 'Tu publicación aprobada fue reactivada.',
+                     publicacion_id=publicacion_id, version_id=public_version_id, usuario_id=publicacion[0])
+        audit_event(cursor, 'publicacion_reactivada', 'Publicaciones', publicacion_id,
+                    comentario or 'Publicación reactivada por administrador.',
+                    usuario_id=publicacion[0], actor_id=session.get('user_id'))
+        conn.commit()
+        return jsonify({'success': True, 'message': 'Publicación reactivada correctamente.'}), 200
+
+    except Exception as e:
+        print(f"Error en admin_reactivar_publicacion: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/publicaciones/<int:publicacion_id>/imagenes', methods=['POST'])
+def subir_imagenes_publicacion(publicacion_id):
+    if 'usuario_autenticado' not in session or not session['usuario_autenticado']:
+        return jsonify({'success': False, 'message': 'No autenticado'}), 401
+    user_id = session.get('user_id')
+    if session.get('tipo_usuario') != 'prestador':
+        return jsonify({'success': False, 'message': 'Solo prestadores pueden subir imágenes.'}), 403
+
+    imagenes = request.files.getlist('imagenes')
+    if not imagenes:
+        imagen_unica = request.files.get('imagen')
+        imagenes = [imagen_unica] if imagen_unica else []
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_control_schema(cursor)
+        cursor.execute("SELECT id FROM Publicaciones WHERE id = ? AND UsuarioId = ?", (publicacion_id, user_id))
+        if not cursor.fetchone():
+            return jsonify({'success': False, 'message': 'La publicación no existe o no te pertenece.'}), 404
+        version_id = obtener_ultima_version_id(cursor, publicacion_id)
+        if not version_id:
+            return jsonify({'success': False, 'message': 'La publicación aún no tiene una versión editable.'}), 400
+        guardadas = guardar_imagenes_version(cursor, publicacion_id, version_id, user_id, imagenes)
+        crear_alerta(cursor, 'publicacion_revision', 'Imágenes pendientes',
+                     'Se agregaron imágenes para revisión administrativa.',
+                     publicacion_id=publicacion_id, version_id=version_id, rol_destino='administrador')
+        conn.commit()
+        return jsonify({'success': True, 'message': 'Imágenes enviadas a revisión.', 'imagenes': guardadas}), 200
+    except ValueError as e:
+        if conn:
+            conn.rollback()
+        return jsonify({'success': False, 'message': str(e)}), 400
+    except Exception as e:
+        print(f"Error en subir_imagenes_publicacion: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/publicaciones/<int:publicacion_id>/imagenes/<int:imagen_id>', methods=['DELETE', 'POST'])
+def eliminar_imagen_publicacion(publicacion_id, imagen_id):
+    if 'usuario_autenticado' not in session or not session['usuario_autenticado']:
+        return jsonify({'success': False, 'message': 'No autenticado'}), 401
+    user_id = session.get('user_id')
+    if session.get('tipo_usuario') != 'prestador':
+        return jsonify({'success': False, 'message': 'Solo prestadores pueden eliminar imágenes.'}), 403
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_control_schema(cursor)
+        cursor.execute("""
+            SELECT img.id
+            FROM PublicacionImagenes img
+            INNER JOIN Publicaciones pub ON img.PublicacionId = pub.id
+            WHERE img.id = ? AND img.PublicacionId = ? AND pub.UsuarioId = ?
+        """, (imagen_id, publicacion_id, user_id))
+        if not cursor.fetchone():
+            return jsonify({'success': False, 'message': 'Imagen no encontrada o sin permisos.'}), 404
+        cursor.execute("""
+            UPDATE PublicacionImagenes
+            SET EstadoRevision = 'eliminada', EliminadoEn = GETDATE()
+            WHERE id = ?
+        """, (imagen_id,))
+        audit_event(cursor, 'imagen_eliminada', 'PublicacionImagenes', imagen_id,
+                    f'Imagen marcada como eliminada por prestador.',
+                    usuario_id=user_id, actor_id=user_id)
+        conn.commit()
+        return jsonify({'success': True, 'message': 'Imagen eliminada de la versión.'}), 200
+    except Exception as e:
+        print(f"Error en eliminar_imagen_publicacion: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/admin/imagenes/<int:imagen_id>/aprobar', methods=['POST'])
+def admin_aprobar_imagen(imagen_id):
+    unauthorized = require_admin_session()
+    if unauthorized:
+        return unauthorized
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_control_schema(cursor)
+        cursor.execute("SELECT PublicacionId, VersionId, UsuarioId, EstadoRevision FROM PublicacionImagenes WHERE id = ?", (imagen_id,))
+        imagen = cursor.fetchone()
+        if not imagen:
+            return jsonify({'success': False, 'message': 'Imagen no encontrada.'}), 404
+        cursor.execute("""
+            UPDATE PublicacionImagenes
+            SET EstadoRevision = 'aprobada', MotivoRechazo = NULL, RevisadoPor = ?, RevisadoEn = GETDATE()
+            WHERE id = ?
+        """, (session.get('user_id'), imagen_id))
+        audit_event(cursor, 'imagen_aprobada', 'PublicacionImagenes', imagen_id,
+                    'Imagen aprobada por administrador.', usuario_id=imagen[2], actor_id=session.get('user_id'))
+        conn.commit()
+        return jsonify({'success': True, 'message': 'Imagen aprobada.'}), 200
+    except Exception as e:
+        print(f"Error en admin_aprobar_imagen: {e}")
+        return jsonify({'success': False, 'message': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/admin/imagenes/<int:imagen_id>/rechazar', methods=['POST'])
+def admin_rechazar_imagen(imagen_id):
+    unauthorized = require_admin_session()
+    if unauthorized:
+        return unauthorized
+    data = request.get_json(silent=True) or {}
+    motivo = (data.get('motivo') or '').strip()
+    if not motivo:
+        return jsonify({'success': False, 'message': 'El motivo de rechazo de imagen es obligatorio.'}), 400
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_control_schema(cursor)
+        cursor.execute("SELECT PublicacionId, VersionId, UsuarioId FROM PublicacionImagenes WHERE id = ?", (imagen_id,))
+        imagen = cursor.fetchone()
+        if not imagen:
+            return jsonify({'success': False, 'message': 'Imagen no encontrada.'}), 404
+        cursor.execute("""
+            UPDATE PublicacionImagenes
+            SET EstadoRevision = 'rechazada', MotivoRechazo = ?, RevisadoPor = ?, RevisadoEn = GETDATE()
+            WHERE id = ?
+        """, (motivo, session.get('user_id'), imagen_id))
+        audit_event(cursor, 'imagen_rechazada', 'PublicacionImagenes', imagen_id,
+                    motivo, usuario_id=imagen[2], actor_id=session.get('user_id'))
+        crear_alerta(cursor, 'imagen_rechazada', 'Imagen rechazada',
+                     motivo, publicacion_id=imagen[0], version_id=imagen[1], usuario_id=imagen[2])
+        conn.commit()
+        return jsonify({'success': True, 'message': 'Imagen rechazada.'}), 200
+    except Exception as e:
+        print(f"Error en admin_rechazar_imagen: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
     finally:
         if conn:
