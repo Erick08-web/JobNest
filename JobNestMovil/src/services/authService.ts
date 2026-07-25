@@ -25,6 +25,29 @@ export async function login(apiFetch: ApiFetch, email: string, password: string)
   });
 }
 
+export async function requestPasswordReset(apiFetch: ApiFetch, correo: string) {
+  return apiFetch<{ success: boolean; message: string }>('/api/auth/password/forgot', {
+    method: 'POST',
+    auth: false,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ correo, canal: 'mobile' }),
+  });
+}
+
+export async function resetPassword(apiFetch: ApiFetch, token: string, password: string, passwordConfirmation: string) {
+  return apiFetch<{ success: boolean; message: string }>('/api/auth/password/reset', {
+    method: 'POST',
+    auth: false,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      token,
+      password,
+      password_confirmation: passwordConfirmation,
+      canal: 'mobile',
+    }),
+  });
+}
+
 export async function fetchCurrentUser(apiFetch: ApiFetch) {
   const data = await apiFetch<{ user?: SessionUser } & SessionUser>('/api/mobile/auth/me');
   return data?.user ?? data ?? {};

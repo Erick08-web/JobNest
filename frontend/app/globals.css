@@ -28,6 +28,8 @@ body {
 }
 a { color: inherit; text-decoration: none; }
 button, input { font: inherit; }
+.inlineAuthLink { justify-self: end; color: var(--indigo); font-weight: 850; font-size: 14px; }
+.fieldErrorStandalone { display: block; color: #b42318; font-weight: 750; }
 
 .siteNav {
   position: fixed;

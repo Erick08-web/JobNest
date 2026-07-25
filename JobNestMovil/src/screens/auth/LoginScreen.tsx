@@ -10,9 +10,11 @@ type LoginField = 'email' | 'password';
 export function LoginScreen({
   initialEmail,
   onRegister,
+  onForgotPassword,
 }: {
   initialEmail?: string;
   onRegister: () => void;
+  onForgotPassword: () => void;
 }) {
   const { login, loading } = useAuth();
   const [loginEmail, setLoginEmail] = useState(initialEmail ?? '');
@@ -46,6 +48,7 @@ export function LoginScreen({
       <Field label="Correo" value={loginEmail} onChangeText={(value) => { setLoginEmail(value); setErrors((current) => ({ ...current, email: undefined })); }} keyboardType="email-address" error={errors.email} />
       <Field label="Contrasena" value={loginPassword} onChangeText={(value) => { setLoginPassword(value); setErrors((current) => ({ ...current, password: undefined })); }} secureTextEntry error={errors.password} />
       <PrimaryButton title="Entrar a JobNest" onPress={handleLogin} disabled={loading} />
+      <GhostButton title="Olvidé mi contraseña" onPress={onForgotPassword} />
       <GhostButton title="Crear cuenta nueva" onPress={onRegister} />
     </AuthCard>
   );

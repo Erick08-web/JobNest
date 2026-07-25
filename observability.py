@@ -60,6 +60,11 @@ BUSINESS_EVENTS = Counter(
     'Eventos basicos de negocio sin datos personales.',
     ['event', 'channel', 'instance'],
 )
+PASSWORD_RESET_EVENTS = Counter(
+    'jobnest_password_reset_events_total',
+    'Eventos de recuperacion de contraseña sin datos personales.',
+    ['result', 'channel', 'instance'],
+)
 SQL_AVAILABLE = Gauge(
     'jobnest_sqlserver_available',
     'Disponibilidad de SQL Server reportada por /health/ready.',
@@ -241,6 +246,14 @@ def record_business_event(event, channel):
     logging.getLogger('jobnest.business').info(
         'business_event',
         extra={**request_context_extra(), 'event': f'{channel}.{event}'},
+    )
+
+
+def record_password_reset_event(result, channel):
+    PASSWORD_RESET_EVENTS.labels(result=result, channel=channel, instance=INSTANCE_ID).inc()
+    logging.getLogger('jobnest.security').info(
+        'password_reset_event',
+        extra={**request_context_extra(), 'event': f'password_reset.{channel}.{result}'},
     )
 
 

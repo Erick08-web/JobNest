@@ -51,6 +51,20 @@ export async function loginUser(email: string, password: string) {
   return backendFetch("/login", { method: "POST", body: formData });
 }
 
+export async function requestPasswordReset(correo: string, canal: "web" | "mobile" = "web") {
+  return backendFetch("/api/auth/password/forgot", {
+    method: "POST",
+    body: JSON.stringify({ correo, canal })
+  });
+}
+
+export async function resetPassword(payload: { token: string; password: string; password_confirmation: string; canal?: "web" | "mobile" }) {
+  return backendFetch("/api/auth/password/reset", {
+    method: "POST",
+    body: JSON.stringify({ ...payload, canal: payload.canal ?? "web" })
+  });
+}
+
 export async function registerUser(payload: {
   firstName: string;
   lastNameP: string;

@@ -12,6 +12,17 @@ export function isPhone(value: string) {
   return /^\d{10,20}$/.test(value);
 }
 
+export function validatePassword(value: string) {
+  if (!value) return 'La contraseña es obligatoria.';
+  if (value.trim() === '') return 'La contraseña no puede estar vacía.';
+  if (value.length < 8) return 'La contraseña debe tener al menos 8 caracteres.';
+  if (value.length > 128) return 'La contraseña debe tener máximo 128 caracteres.';
+  if (!/[A-ZÁÉÍÓÚÑ]/.test(value)) return 'La contraseña debe contener al menos una letra mayúscula.';
+  if (!/\d/.test(value)) return 'La contraseña debe contener al menos un número.';
+  if (!/[!@#$%^&*(),.?":{}|<>]/.test(value)) return 'La contraseña debe contener al menos un carácter especial.';
+  return '';
+}
+
 export function isIsoDate(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const parsed = new Date(`${value}T00:00:00`);

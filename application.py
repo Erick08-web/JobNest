@@ -1,6 +1,8 @@
 import os
 import hashlib
 import hmac
+import secrets
+import smtplib
 
 
 def cargar_env_local(ruta='.env'):
@@ -16,6 +18,7 @@ def cargar_env_local(ruta='.env'):
 
 cargar_env_local()
 from functools import wraps
+from email.message import EmailMessage
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, send_from_directory, abort, g
 from werkzeug.middleware.proxy_fix import ProxyFix
 import pyodbc
@@ -48,6 +51,7 @@ from observability import (
     metrics_response,
     record_auth_event,
     record_business_event,
+    record_password_reset_event,
     record_security_warning,
     set_sql_availability,
     start_request_observability,
@@ -437,11 +441,14 @@ def is_valid_email(email):
 
 def is_valid_password(password):
     min_length = 8
+    max_length = 128
     has_upper_case = any(c.isupper() for c in password)
     has_number = any(c.isdigit() for c in password)
     has_special_char = any(c in "!@#$%^&*(),.?\":{}|<>" for c in password)
     if len(password) < min_length:
         return 'La contraseña debe tener al menos 8 caracteres.'
+    if len(password) > max_length:
+        return 'La contraseña debe tener máximo 128 caracteres.'
     if not has_upper_case:
         return 'La contraseña debe contener al menos una letra mayúscula.'
     if not has_number:
@@ -788,6 +795,399 @@ def revoke_user_refresh_tokens(cursor, user_id):
             UltimoUsoEn = ?
         WHERE UsuarioId = ? AND RevocadoEn IS NULL
     """, (utc_now(), utc_now(), user_id))
+
+
+PASSWORD_RESET_PUBLIC_MESSAGE = 'Si el correo está registrado, recibirás instrucciones para restablecer tu contraseña.'
+PASSWORD_RESET_INVALID_MESSAGE = 'El enlace es inválido o ha expirado.'
+
+
+def password_reset_minutes():
+    return max(15, min(int(os.environ.get('PASSWORD_RESET_TOKEN_MINUTES', '30')), 60))
+
+
+def password_reset_window_minutes():
+    return max(1, int(os.environ.get('PASSWORD_RESET_WINDOW_MINUTES', '15')))
+
+
+def password_reset_email_limit():
+    return max(1, int(os.environ.get('PASSWORD_RESET_MAX_PER_EMAIL', '3')))
+
+
+def password_reset_ip_limit():
+    return max(1, int(os.environ.get('PASSWORD_RESET_MAX_PER_IP', '10')))
+
+
+def normalize_reset_channel(value):
+    return value if value in {'web', 'mobile'} else None
+
+
+def hash_reset_lookup(value):
+    return hashlib.sha256(value.encode('utf-8')).hexdigest()
+
+
+def hash_reset_token(token):
+    return hashlib.sha256(token.encode('utf-8')).hexdigest()
+
+
+def current_client_ip():
+    forwarded_for = request.headers.get('X-Forwarded-For', '')
+    if forwarded_for:
+        return forwarded_for.split(',')[0].strip()[:45]
+    return (request.headers.get('X-Real-IP') or request.remote_addr or '')[:45]
+
+
+def ensure_password_reset_schema(cursor):
+    cursor.execute("SET QUOTED_IDENTIFIER ON")
+    cursor.execute("""
+        IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'PasswordResetTokens')
+        BEGIN
+            CREATE TABLE PasswordResetTokens (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                UsuarioId INT NULL,
+                EmailHash CHAR(64) NOT NULL,
+                TokenHash CHAR(64) NULL,
+                Canal NVARCHAR(20) NOT NULL,
+                IpSolicitud NVARCHAR(45) NULL,
+                FechaCreacion DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME(),
+                FechaExpiracion DATETIME2 NULL,
+                FechaUso DATETIME2 NULL,
+                Revocado BIT NOT NULL DEFAULT 0,
+                EmailEnviado BIT NOT NULL DEFAULT 0,
+                CONSTRAINT FK_PasswordResetTokens_Usuarios
+                    FOREIGN KEY (UsuarioId) REFERENCES Usuarios(id)
+            );
+        END
+    """)
+    cursor.execute("""
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_PasswordResetTokens_TokenHash')
+        BEGIN
+            CREATE UNIQUE INDEX UX_PasswordResetTokens_TokenHash
+            ON PasswordResetTokens(TokenHash)
+            WHERE TokenHash IS NOT NULL;
+        END
+    """)
+    cursor.execute("""
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_PasswordResetTokens_Usuario')
+        BEGIN
+            CREATE INDEX IX_PasswordResetTokens_Usuario
+            ON PasswordResetTokens(UsuarioId, FechaCreacion DESC);
+        END
+    """)
+    cursor.execute("""
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_PasswordResetTokens_EmailHash')
+        BEGIN
+            CREATE INDEX IX_PasswordResetTokens_EmailHash
+            ON PasswordResetTokens(EmailHash, FechaCreacion DESC);
+        END
+    """)
+    cursor.execute("""
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_PasswordResetTokens_Ip')
+        BEGIN
+            CREATE INDEX IX_PasswordResetTokens_Ip
+            ON PasswordResetTokens(IpSolicitud, FechaCreacion DESC);
+        END
+    """)
+    cursor.execute("""
+        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_PasswordResetTokens_Expiracion')
+        BEGIN
+            CREATE INDEX IX_PasswordResetTokens_Expiracion
+            ON PasswordResetTokens(FechaExpiracion);
+        END
+    """)
+
+
+def build_reset_link(token, channel):
+    if channel == 'mobile':
+        base = os.environ.get('MOBILE_DEEP_LINK_BASE', 'jobnest://restablecer-password')
+    else:
+        base = f"{os.environ.get('WEB_BASE_URL', 'http://localhost:3000').rstrip('/')}/restablecer-password"
+    separator = '&' if '?' in base else '?'
+    return f'{base}{separator}token={token}'
+
+
+def reset_email_content(link, minutes):
+    subject = 'Restablece tu contraseña de JobNest'
+    text = (
+        'Hola,\n\n'
+        'Recibimos una solicitud para restablecer tu contraseña de JobNest.\n'
+        f'Usa este enlace durante los próximos {minutes} minutos:\n\n'
+        f'{link}\n\n'
+        'Si no solicitaste este cambio, ignora este correo.\n'
+        'No compartas este enlace con nadie.\n'
+    )
+    html = f"""
+    <div style="font-family:Arial,sans-serif;color:#101828;line-height:1.6">
+      <h2>JobNest</h2>
+      <p>Recibimos una solicitud para restablecer tu contraseña.</p>
+      <p><a href="{link}" style="display:inline-block;padding:12px 18px;background:#3457ff;color:#fff;border-radius:8px;text-decoration:none">Restablecer contraseña</a></p>
+      <p>Este enlace vence en {minutes} minutos.</p>
+      <p>Si no solicitaste este cambio, ignora este correo. No compartas este enlace con nadie.</p>
+    </div>
+    """
+    return subject, text, html
+
+
+def send_password_reset_email(email, link, minutes):
+    mode = os.environ.get('MAIL_MODE', 'console').lower()
+    subject, text, html = reset_email_content(link, minutes)
+    if mode == 'console':
+        logger.info('password_reset_console_email_local_only', extra={
+            'request_id': getattr(g, 'request_id', None),
+            'event': 'password_reset.console_email',
+        })
+        if os.environ.get('LOG_FORMAT', 'text').lower() != 'json':
+            logger.info(f'Enlace local de recuperación JobNest: {link}')
+        return True
+    if mode != 'smtp':
+        logger.warning('password_reset_mail_mode_invalid', extra={'request_id': getattr(g, 'request_id', None)})
+        return False
+
+    host = os.environ.get('SMTP_HOST')
+    username = os.environ.get('SMTP_USERNAME')
+    password = os.environ.get('SMTP_PASSWORD')
+    mail_from = os.environ.get('MAIL_FROM') or username
+    port = int(os.environ.get('SMTP_PORT', '587'))
+    timeout = int(os.environ.get('SMTP_TIMEOUT_SECONDS', '10'))
+    use_tls = os.environ.get('SMTP_USE_TLS', 'true').lower() == 'true'
+    if not host or not mail_from:
+        logger.warning('password_reset_smtp_not_configured', extra={'request_id': getattr(g, 'request_id', None)})
+        return False
+
+    message = EmailMessage()
+    message['Subject'] = subject
+    message['From'] = mail_from
+    message['To'] = email
+    message.set_content(text)
+    message.add_alternative(html, subtype='html')
+    try:
+        with smtplib.SMTP(host, port, timeout=timeout) as smtp:
+            if use_tls:
+                smtp.starttls()
+            if username and password:
+                smtp.login(username, password)
+            smtp.send_message(message)
+        return True
+    except Exception:
+        logger.exception('password_reset_smtp_failed', extra={'request_id': getattr(g, 'request_id', None)})
+        return False
+
+
+def password_reset_validation_response(errors, status=400):
+    return jsonify({
+        'success': False,
+        'message': 'No fue posible restablecer la contraseña.',
+        'errors': errors,
+        'request_id': getattr(g, 'request_id', None),
+    }), status
+
+
+def public_password_reset_response():
+    return jsonify({'success': True, 'message': PASSWORD_RESET_PUBLIC_MESSAGE}), 200
+
+
+@app.route('/api/auth/password/forgot', methods=['POST'])
+def password_forgot():
+    data = request.get_json(silent=True) or {}
+    correo = (data.get('correo') or data.get('email') or '').strip().lower()
+    channel = normalize_reset_channel(data.get('canal') or data.get('channel') or 'web')
+    errors = {}
+    if not correo:
+        errors['correo'] = 'El correo es obligatorio.'
+    elif len(correo) > 150 or not is_valid_email(correo):
+        errors['correo'] = 'Ingresa un correo válido.'
+    if not channel:
+        errors['canal'] = 'El canal no es válido.'
+    if errors:
+        record_password_reset_event('failed_validation', channel or 'unknown')
+        return password_reset_validation_response(errors)
+
+    conn = None
+    email_hash = hash_reset_lookup(correo)
+    ip = current_client_ip()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_password_reset_schema(cursor)
+
+        window = password_reset_window_minutes()
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM PasswordResetTokens
+            WHERE EmailHash = ? AND FechaCreacion >= DATEADD(MINUTE, ?, SYSUTCDATETIME())
+        """, (email_hash, -window))
+        email_attempts = cursor.fetchone()[0]
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM PasswordResetTokens
+            WHERE IpSolicitud = ? AND FechaCreacion >= DATEADD(MINUTE, ?, SYSUTCDATETIME())
+        """, (ip, -window))
+        ip_attempts = cursor.fetchone()[0]
+        if email_attempts >= password_reset_email_limit() or ip_attempts >= password_reset_ip_limit():
+            record_password_reset_event('rate_limited', channel)
+            logger.warning('password_reset_rate_limited', extra={
+                'request_id': getattr(g, 'request_id', None),
+                'event': 'password_reset.rate_limited',
+            })
+            return jsonify({
+                'success': False,
+                'message': 'Demasiadas solicitudes. Intenta nuevamente más tarde.',
+                'request_id': getattr(g, 'request_id', None),
+            }), 429
+
+        cursor.execute("""
+            SELECT id, Email, Activo
+            FROM Usuarios
+            WHERE LOWER(Email) = ?
+        """, (correo,))
+        user = cursor.fetchone()
+        minutes = password_reset_minutes()
+        expires_at = utc_now() + timedelta(minutes=minutes)
+        token_hash = None
+        user_id = None
+        email_sent = False
+
+        if user and bool(user[2]):
+            user_id = user[0]
+            cursor.execute("""
+                UPDATE PasswordResetTokens
+                SET Revocado = 1
+                WHERE UsuarioId = ?
+                  AND FechaUso IS NULL
+                  AND Revocado = 0
+                  AND FechaExpiracion > SYSUTCDATETIME()
+            """, (user_id,))
+            token = secrets.token_urlsafe(32)
+            token_hash = hash_reset_token(token)
+            reset_link = build_reset_link(token, channel)
+            email_sent = send_password_reset_email(user[1], reset_link, minutes)
+            record_password_reset_event('requested', channel)
+            if not email_sent:
+                record_password_reset_event('email_failed', channel)
+        else:
+            record_password_reset_event('requested_no_active_account', channel)
+
+        cursor.execute("""
+            INSERT INTO PasswordResetTokens
+                (UsuarioId, EmailHash, TokenHash, Canal, IpSolicitud, FechaExpiracion, Revocado, EmailEnviado)
+            VALUES (?, ?, ?, ?, ?, ?, 0, ?)
+        """, (user_id, email_hash, token_hash, channel, ip, expires_at if token_hash else None, 1 if email_sent else 0))
+        conn.commit()
+        return public_password_reset_response()
+
+    except pyodbc.Error as ex:
+        if conn:
+            conn.rollback()
+        logger.exception('password_reset_forgot_db_error', extra={
+            'request_id': getattr(g, 'request_id', None),
+            'sqlstate': ex.args[0] if ex.args else None,
+        })
+        record_password_reset_event('failed', channel)
+        return jsonify({'success': False, 'message': 'No fue posible procesar la solicitud.', 'request_id': getattr(g, 'request_id', None)}), 500
+    except Exception:
+        if conn:
+            conn.rollback()
+        logger.exception('password_reset_forgot_unexpected', extra={'request_id': getattr(g, 'request_id', None)})
+        record_password_reset_event('failed', channel)
+        return jsonify({'success': False, 'message': 'No fue posible procesar la solicitud.', 'request_id': getattr(g, 'request_id', None)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/auth/password/reset', methods=['POST'])
+def password_reset():
+    data = request.get_json(silent=True) or {}
+    token = data.get('token') or ''
+    password = data.get('password') or ''
+    confirmation = data.get('password_confirmation') or data.get('passwordConfirmation') or ''
+    channel = normalize_reset_channel(data.get('canal') or data.get('channel') or 'web') or 'web'
+    errors = {}
+
+    if not token:
+        errors['token'] = PASSWORD_RESET_INVALID_MESSAGE
+    elif len(token) > 256 or not re.match(r'^[A-Za-z0-9_-]+$', token):
+        errors['token'] = PASSWORD_RESET_INVALID_MESSAGE
+    if not password:
+        errors['password'] = 'La contraseña es obligatoria.'
+    elif password.strip() == '':
+        errors['password'] = 'La contraseña no puede estar vacía.'
+    else:
+        password_error = is_valid_password(password)
+        if password_error:
+            errors['password'] = password_error
+    if not confirmation:
+        errors['password_confirmation'] = 'Confirma tu contraseña.'
+    elif password != confirmation:
+        errors['password_confirmation'] = 'Las contraseñas no coinciden.'
+    if errors:
+        record_password_reset_event('failed_validation', channel)
+        return password_reset_validation_response(errors)
+
+    conn = None
+    token_hash = hash_reset_token(token)
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_password_reset_schema(cursor)
+        cursor.execute("""
+            SELECT prt.id, prt.UsuarioId, prt.TokenHash, prt.FechaExpiracion,
+                   prt.FechaUso, prt.Revocado, u.PasswordHash, u.Activo
+            FROM PasswordResetTokens prt
+            INNER JOIN Usuarios u ON prt.UsuarioId = u.id
+            WHERE prt.TokenHash = ?
+        """, (token_hash,))
+        row = cursor.fetchone()
+        if not row or not hmac.compare_digest((row[2] or '').strip(), token_hash):
+            record_password_reset_event('failed_invalid_token', channel)
+            return password_reset_validation_response({'token': PASSWORD_RESET_INVALID_MESSAGE})
+        token_id, user_id, _, expires_at, used_at, revoked, current_hash, active = row
+        if used_at is not None or bool(revoked) or not expires_at or expires_at <= utc_now() or not bool(active):
+            record_password_reset_event('failed_invalid_token', channel)
+            return password_reset_validation_response({'token': PASSWORD_RESET_INVALID_MESSAGE})
+        if verificar_password(current_hash, password):
+            record_password_reset_event('failed_same_password', channel)
+            return password_reset_validation_response({'password': 'La nueva contraseña no puede ser igual a la actual.'}, 409)
+
+        cursor.execute("UPDATE Usuarios SET PasswordHash = ?, UltimoLogin = ? WHERE id = ?", (hash_password(password), utc_now(), user_id))
+        cursor.execute("""
+            UPDATE PasswordResetTokens
+            SET FechaUso = ?, Revocado = 1
+            WHERE id = ? AND FechaUso IS NULL AND Revocado = 0
+        """, (utc_now(), token_id))
+        cursor.execute("""
+            UPDATE PasswordResetTokens
+            SET Revocado = 1
+            WHERE UsuarioId = ? AND id <> ? AND FechaUso IS NULL AND Revocado = 0
+        """, (user_id, token_id))
+        revoke_user_refresh_tokens(cursor, user_id)
+        conn.commit()
+        g.safe_user_id = user_id
+        record_password_reset_event('completed', channel)
+        logger.info('password_reset_completed', extra={
+            'request_id': getattr(g, 'request_id', None),
+            'event': 'password_reset.completed',
+            'user_id': user_id,
+        })
+        return jsonify({'success': True, 'message': 'Tu contraseña fue actualizada correctamente.'}), 200
+
+    except pyodbc.Error as ex:
+        if conn:
+            conn.rollback()
+        logger.exception('password_reset_db_error', extra={
+            'request_id': getattr(g, 'request_id', None),
+            'sqlstate': ex.args[0] if ex.args else None,
+        })
+        record_password_reset_event('failed', channel)
+        return jsonify({'success': False, 'message': 'No fue posible restablecer la contraseña.', 'request_id': getattr(g, 'request_id', None)}), 500
+    except Exception:
+        if conn:
+            conn.rollback()
+        logger.exception('password_reset_unexpected', extra={'request_id': getattr(g, 'request_id', None)})
+        record_password_reset_event('failed', channel)
+        return jsonify({'success': False, 'message': 'No fue posible restablecer la contraseña.', 'request_id': getattr(g, 'request_id', None)}), 500
+    finally:
+        if conn:
+            conn.close()
 
 
 def load_mobile_jwt_user():

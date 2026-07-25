@@ -3,6 +3,8 @@ import type { Publication } from './domain';
 export type PublicStackParamList = {
   Home: undefined;
   Login: { email?: string } | undefined;
+  ForgotPassword: undefined;
+  ResetPassword: { token?: string } | undefined;
   Register: undefined;
   Explore: undefined;
   Detail: { publication: Publication };

@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, type LinkingOptions } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack';
 import { View } from 'react-native';
@@ -7,6 +7,8 @@ import { ScreenFrame } from '../components/ScreenFrame';
 import { LoadingPill } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
 import { LoginScreen } from '../screens/auth/LoginScreen';
+import { ForgotPasswordScreen } from '../screens/auth/ForgotPasswordScreen';
+import { ResetPasswordScreen } from '../screens/auth/ResetPasswordScreen';
 import { RegisterScreen } from '../screens/auth/RegisterScreen';
 import { ClientDashboardScreen } from '../screens/client/ClientDashboardScreen';
 import { ProviderDashboardScreen } from '../screens/provider/ProviderDashboardScreen';
@@ -34,6 +36,22 @@ const AuthStack = createNativeStackNavigator<AuthenticatedStackParamList>();
 const ClientTabs = createBottomTabNavigator<ClientTabParamList>();
 const ProviderTabs = createBottomTabNavigator<ProviderTabParamList>();
 
+const linking: LinkingOptions<PublicStackParamList> = {
+  prefixes: ['jobnest://'],
+  config: {
+    screens: {
+      Home: '',
+      Login: 'login',
+      Register: 'registro',
+      ForgotPassword: 'recuperar-password',
+      ResetPassword: 'restablecer-password',
+      Explore: 'buscar',
+      Detail: 'servicios/:publication',
+      Settings: 'configuracion',
+    },
+  },
+};
+
 type PublicProps<RouteName extends keyof PublicStackParamList> = NativeStackScreenProps<PublicStackParamList, RouteName>;
 type AuthProps<RouteName extends keyof AuthenticatedStackParamList> = NativeStackScreenProps<AuthenticatedStackParamList, RouteName>;
 type MobileDataValue = ReturnType<typeof useCreateMobileData>;
@@ -54,7 +72,7 @@ export function AppNavigator() {
 
   return (
     <MobileDataContext.Provider value={data}>
-      <NavigationContainer>
+      <NavigationContainer linking={linking}>
       {isLoggedIn ? <AuthenticatedNavigator /> : <PublicNavigator />}
       </NavigationContainer>
     </MobileDataContext.Provider>
@@ -66,6 +84,8 @@ function PublicNavigator() {
     <PublicStack.Navigator screenOptions={{ headerShown: false }}>
       <PublicStack.Screen name="Home" component={PublicHomeRoute} />
       <PublicStack.Screen name="Login" component={LoginRoute} />
+      <PublicStack.Screen name="ForgotPassword" component={ForgotPasswordRoute} />
+      <PublicStack.Screen name="ResetPassword" component={ResetPasswordRoute} />
       <PublicStack.Screen name="Register" component={RegisterRoute} />
       <PublicStack.Screen name="Explore" component={PublicExploreRoute} />
       <PublicStack.Screen name="Detail" component={PublicDetailRoute} />
@@ -111,6 +131,27 @@ function LoginRoute({ navigation, route }: PublicProps<'Login'>) {
       <LoginScreen
         initialEmail={route.params?.email}
         onRegister={() => navigation.navigate('Register')}
+        onForgotPassword={() => navigation.navigate('ForgotPassword')}
+      />
+    </ScreenFrame>
+  );
+}
+
+function ForgotPasswordRoute({ navigation }: PublicProps<'ForgotPassword'>) {
+  return (
+    <ScreenFrame onHome={() => navigation.navigate('Home')} onSettings={() => navigation.navigate('Settings')}>
+      <ForgotPasswordScreen onBack={() => navigation.navigate('Login')} />
+    </ScreenFrame>
+  );
+}
+
+function ResetPasswordRoute({ navigation, route }: PublicProps<'ResetPassword'>) {
+  return (
+    <ScreenFrame onHome={() => navigation.navigate('Home')} onSettings={() => navigation.navigate('Settings')}>
+      <ResetPasswordScreen
+        token={route.params?.token}
+        onBack={() => navigation.navigate('Login')}
+        onRequestNew={() => navigation.navigate('ForgotPassword')}
       />
     </ScreenFrame>
   );

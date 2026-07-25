@@ -52,6 +52,7 @@ export default function LoginPage() {
           {message ? <div className="formAlert">{message}</div> : null}
           <label className="fieldGroup"><span>Correo electrónico</span><div><Mail size={18} /><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="tu@email.com" required /></div></label>
           <label className="fieldGroup"><span>Contraseña</span><div><LockKeyhole size={18} /><input type={showPassword ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Tu contraseña" required /><button type="button" onClick={() => setShowPassword((value) => !value)} aria-label="Mostrar contraseña"><Eye size={18} /></button></div></label>
+          <Link className="inlineAuthLink" href="/recuperar-password">Olvidé mi contraseña</Link>
           <button className="submitButton" disabled={loading}>{loading ? "Entrando..." : "Entrar a JobNest"}<ArrowRight size={18} /></button>
           <p className="authSwitch">¿No tienes cuenta? <Link href="/registro">Crear cuenta</Link></p>
         </form>
