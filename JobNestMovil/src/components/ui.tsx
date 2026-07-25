@@ -12,7 +12,13 @@ export function AuthCard({ title, subtitle, children }: { title: string; subtitl
   );
 }
 
-export function Field({ label, multiline, style, ...props }: { label: string; multiline?: boolean } & React.ComponentProps<typeof TextInput>) {
+export function Field({
+  label,
+  multiline,
+  error,
+  style,
+  ...props
+}: { label: string; multiline?: boolean; error?: string } & React.ComponentProps<typeof TextInput>) {
   return (
     <View style={styles.fieldGroup}>
       <Text style={styles.label}>{label}</Text>
@@ -20,8 +26,9 @@ export function Field({ label, multiline, style, ...props }: { label: string; mu
         {...props}
         multiline={multiline}
         placeholderTextColor="#98a2b3"
-        style={[styles.input, multiline && styles.textArea, style]}
+        style={[styles.input, multiline && styles.textArea, error && styles.inputError, style]}
       />
+      {error ? <Text style={styles.fieldError}>{error}</Text> : null}
     </View>
   );
 }

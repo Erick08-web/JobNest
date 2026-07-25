@@ -346,6 +346,15 @@ export const styles = StyleSheet.create({
     color: INK,
     fontSize: 16,
   },
+  inputError: {
+    borderColor: '#f04438',
+    backgroundColor: '#fff8f7',
+  },
+  fieldError: {
+    color: '#b42318',
+    fontSize: 12,
+    fontWeight: '700',
+  },
   textArea: {
     minHeight: 120,
     textAlignVertical: 'top',

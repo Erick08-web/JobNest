@@ -49,6 +49,7 @@ export async function registerUser(
     phone: string;
     registerEmail: string;
     registerPassword: string;
+    confirmPassword: string;
   },
 ) {
   await apiFetch('/registrar_usuario_web', {
@@ -62,7 +63,7 @@ export async function registerUser(
       candidatePhone: payload.phone,
       email: payload.registerEmail,
       password: payload.registerPassword,
-      confirmPassword: payload.registerPassword,
+      confirmPassword: payload.confirmPassword,
       userType: userTypeForApi(payload.registerType),
       termsCheck: 'on',
     }),

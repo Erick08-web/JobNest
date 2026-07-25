@@ -6,6 +6,10 @@ import { styles } from '../../styles/theme';
 import type { Publication } from '../../types/domain';
 import { getPublicationId, money, normalizePublication } from '../../utils/formatters';
 import { useAuth } from '../../context/AuthContext';
+import type { FieldErrors } from '../../types/forms';
+import { cleanText, isHour, isIsoDate, isTodayOrFuture, mergeServerErrors } from '../../utils/validation';
+
+type RequestField = 'publicacion_id' | 'fecha_servicio' | 'hora_servicio' | 'mensaje';
 
 export function DetailScreen({
   publication,
@@ -16,11 +20,12 @@ export function DetailScreen({
   onLoginRequired: () => void;
   onRequestSent: () => void;
 }) {
-  const { isLoggedIn, apiFetch, setLoading } = useAuth();
+  const { isLoggedIn, apiFetch, loading, setLoading } = useAuth();
   const item = normalizePublication(publication);
   const [serviceDate, setServiceDate] = useState('');
   const [serviceTime, setServiceTime] = useState('');
   const [serviceMessage, setServiceMessage] = useState('');
+  const [errors, setErrors] = useState<FieldErrors<RequestField>>({});
 
   const handleRequestService = async () => {
     if (!isLoggedIn) {
@@ -30,11 +35,25 @@ export function DetailScreen({
 
     const id = getPublicationId(item);
     if (!id) {
-      Alert.alert('Servicio no valido', 'Selecciona un servicio publicado.');
+      setErrors({ publicacion_id: 'Selecciona un servicio publicado.' });
       return;
     }
-    if (!serviceDate) {
-      Alert.alert('Faltan datos', 'La fecha del servicio es obligatoria.');
+
+    const nextErrors: FieldErrors<RequestField> = {};
+    const date = cleanText(serviceDate);
+    const time = cleanText(serviceTime);
+    const message = cleanText(serviceMessage);
+    if (!date) nextErrors.fecha_servicio = 'La fecha del servicio es obligatoria.';
+    else if (!isIsoDate(date)) nextErrors.fecha_servicio = 'Usa formato YYYY-MM-DD.';
+    else if (!isTodayOrFuture(date)) nextErrors.fecha_servicio = 'La fecha no puede ser pasada.';
+    if (time && !isHour(time)) nextErrors.hora_servicio = 'Usa formato HH:MM.';
+    if (message.length > 1000) nextErrors.mensaje = 'El mensaje debe tener máximo 1000 caracteres.';
+
+    setServiceDate(date);
+    setServiceTime(time);
+    setServiceMessage(message);
+    setErrors(nextErrors);
+    if (Object.keys(nextErrors).length) {
       return;
     }
 
@@ -42,14 +61,16 @@ export function DetailScreen({
     try {
       await sendServiceRequest(apiFetch, {
         publicationId: id,
-        serviceDate,
-        serviceTime,
-        serviceMessage,
+        serviceDate: date,
+        serviceTime: time,
+        serviceMessage: message,
       });
       Alert.alert('Solicitud enviada', 'El profesional podra revisar tu solicitud.');
       onRequestSent();
     } catch (error) {
-      Alert.alert('No se pudo enviar', error instanceof Error ? error.message : 'Intentalo de nuevo.');
+      const parsed = mergeServerErrors<RequestField>(error, 'Intentalo de nuevo.');
+      setErrors(parsed.errors);
+      Alert.alert('No se pudo enviar', parsed.message);
     } finally {
       setLoading(false);
     }
@@ -80,10 +101,10 @@ export function DetailScreen({
       </View>
 
       <AuthCard title="Solicitar servicio" subtitle="El profesional recibira fecha, hora y mensaje.">
-        <Field label="Fecha" value={serviceDate} onChangeText={setServiceDate} placeholder="YYYY-MM-DD" />
-        <Field label="Hora" value={serviceTime} onChangeText={setServiceTime} placeholder="HH:MM" />
-        <Field label="Mensaje" value={serviceMessage} onChangeText={setServiceMessage} multiline />
-        <PrimaryButton title="Enviar solicitud" onPress={handleRequestService} />
+        <Field label="Fecha" value={serviceDate} onChangeText={(value) => { setServiceDate(value); setErrors((current) => ({ ...current, fecha_servicio: undefined })); }} placeholder="YYYY-MM-DD" error={errors.fecha_servicio} />
+        <Field label="Hora" value={serviceTime} onChangeText={(value) => { setServiceTime(value); setErrors((current) => ({ ...current, hora_servicio: undefined })); }} placeholder="HH:MM" error={errors.hora_servicio} />
+        <Field label="Mensaje" value={serviceMessage} onChangeText={(value) => { setServiceMessage(value); setErrors((current) => ({ ...current, mensaje: undefined })); }} multiline error={errors.mensaje} />
+        <PrimaryButton title="Enviar solicitud" onPress={handleRequestService} disabled={loading} />
       </AuthCard>
     </View>
   );

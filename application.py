@@ -306,6 +306,138 @@ def is_valid_phone_number(phone):
     return re.fullmatch(r"^\d{10,20}$", phone)
 
 
+class ValidationError(Exception):
+    def __init__(self, errors, message='Revisa los datos ingresados', status_code=400):
+        super().__init__(message)
+        self.errors = errors
+        self.message = message
+        self.status_code = status_code
+
+
+def validation_response(errors, message='Revisa los datos ingresados', status_code=400):
+    return jsonify({'success': False, 'message': message, 'errors': errors}), status_code
+
+
+def clean_text(value):
+    if value is None:
+        return ''
+    return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', str(value)).strip()
+
+
+def add_required_text(errors, field, value, label, min_len=1, max_len=None):
+    text = clean_text(value)
+    if not text:
+        errors[field] = f'{label} es obligatorio.'
+        return text
+    if len(text) < min_len:
+        errors[field] = f'{label} debe tener al menos {min_len} caracteres.'
+    elif max_len and len(text) > max_len:
+        errors[field] = f'{label} debe tener máximo {max_len} caracteres.'
+    return text
+
+
+def add_optional_text(errors, field, value, label, max_len):
+    text = clean_text(value)
+    if text and len(text) > max_len:
+        errors[field] = f'{label} debe tener máximo {max_len} caracteres.'
+    return text
+
+
+def parse_positive_decimal(errors, field, value, label, required=True, maximum=1000000):
+    raw = clean_text(value)
+    if not raw:
+        if required:
+            errors[field] = f'{label} es obligatorio.'
+        return None
+    if raw.lower() in {'nan', 'infinity', '+infinity', '-infinity'}:
+        errors[field] = f'{label} debe ser un número válido.'
+        return None
+    try:
+        number = float(raw)
+    except ValueError:
+        errors[field] = f'{label} debe ser un número válido.'
+        return None
+    if number <= 0:
+        errors[field] = f'{label} debe ser mayor que cero.'
+    elif number > maximum:
+        errors[field] = f'{label} no debe superar ${maximum:,.0f}.'
+    return round(number, 2)
+
+
+def parse_int_range(errors, field, value, label, minimum=0, maximum=80, required=True):
+    raw = clean_text(value)
+    if not raw:
+        if required:
+            errors[field] = f'{label} es obligatorio.'
+        return None
+    try:
+        number = int(raw)
+    except ValueError:
+        errors[field] = f'{label} debe ser un número entero válido.'
+        return None
+    if number < minimum or number > maximum:
+        errors[field] = f'{label} debe estar entre {minimum} y {maximum}.'
+    return number
+
+
+def parse_iso_date(errors, field, value, label, required=True, allow_today=True):
+    raw = clean_text(value)
+    if not raw:
+        if required:
+            errors[field] = f'{label} es obligatoria.'
+        return None
+    try:
+        parsed = datetime.strptime(raw, '%Y-%m-%d').date()
+    except ValueError:
+        errors[field] = f'{label} debe tener formato YYYY-MM-DD.'
+        return None
+    today = datetime.now().date()
+    if parsed < today or (not allow_today and parsed == today):
+        errors[field] = f'{label} no puede ser una fecha pasada.'
+    return parsed
+
+
+def parse_hhmm_time(errors, field, value, label, required=False):
+    raw = clean_text(value)
+    if not raw:
+        if required:
+            errors[field] = f'{label} es obligatoria.'
+        return None
+    try:
+        return datetime.strptime(raw, '%H:%M').time()
+    except ValueError:
+        errors[field] = f'{label} debe tener formato HH:MM.'
+        return None
+
+
+def reject_unknown_fields(source, allowed_fields, blocked_fields):
+    keys = set(source.keys())
+    blocked = keys.intersection(blocked_fields)
+    unknown = keys.difference(allowed_fields).difference(blocked_fields)
+    errors = {}
+    for field in blocked:
+        errors[field] = 'Este campo no puede enviarse desde la aplicación móvil.'
+    for field in unknown:
+        errors[field] = 'Campo no permitido.'
+    return errors
+
+
+def category_exists(cursor, category):
+    cursor.execute("""
+        SELECT TOP 1 1
+        FROM Publicaciones p
+        WHERE p.Categoria = ?
+          AND p.Activa = 1
+          AND EXISTS (
+              SELECT 1 FROM PublicacionVersiones pv
+              WHERE pv.PublicacionId = p.id
+                AND pv.Estado = 'aprobada'
+                AND pv.EsVersionPublica = 1
+          )
+    """, (category,))
+    return cursor.fetchone() is not None
+
+
 def get_admin_emails():
     return {
         email.strip().lower()
@@ -873,6 +1005,7 @@ def crear_version_publicacion(cursor, publicacion_id, user_id, datos, estado='pe
             PublicacionId, VersionNumero, Titulo, Descripcion, Categoria, Precio, Ubicacion,
             Experiencia, Habilidades, Disponibilidad, IncluyeMateriales, TipoPrecio, Estado, AutorId
         )
+        OUTPUT INSERTED.id
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         publicacion_id,
@@ -890,7 +1023,6 @@ def crear_version_publicacion(cursor, publicacion_id, user_id, datos, estado='pe
         estado,
         user_id
     ))
-    cursor.execute("SELECT SCOPE_IDENTITY()")
     return int(cursor.fetchone()[0])
 
 
@@ -1001,39 +1133,36 @@ def guardar_imagenes_version(cursor, publicacion_id, version_id, user_id, imagen
 
 
 def leer_datos_publicacion_form():
-    titulo = request.form.get('titulo', '').strip()
-    descripcion = request.form.get('descripcion', '').strip()
-    categoria = request.form.get('categoria', '').strip()
-    precio = request.form.get('salario', '').strip()
-    ubicacion = request.form.get('ubicacion', '').strip()
-    experiencia = request.form.get('experiencia', '').strip()
-    habilidades = request.form.get('habilidades', '').strip()
-    disponibilidad = request.form.get('disponibilidad', '').strip()
-    tipo_precio = request.form.get('tipo_precio', 'hora')
-    incluye_materiales = request.form.get('incluye_materiales') == 'on'
+    datos, errors = validar_datos_publicacion(request.form)
+    if errors:
+        first_error = next(iter(errors.values()))
+        raise ValueError(first_error)
+    return datos
 
-    if not titulo:
-        raise ValueError('El título es obligatorio.')
-    if not descripcion:
-        raise ValueError('La descripción es obligatoria.')
-    if not categoria:
-        raise ValueError('La categoría es obligatoria.')
-    if not ubicacion:
-        raise ValueError('La ubicación es obligatoria.')
-    if not experiencia:
-        raise ValueError('La experiencia es obligatoria.')
 
-    precio_decimal = None
-    if precio:
-        try:
-            precio_decimal = float(precio)
-        except ValueError as exc:
-            raise ValueError('El precio debe ser un número válido.') from exc
+def validar_datos_publicacion(form_data, cursor=None):
+    allowed_fields = {
+        'titulo', 'descripcion', 'categoria', 'salario', 'ubicacion', 'experiencia',
+        'habilidades', 'disponibilidad', 'tipo_precio', 'incluye_materiales'
+    }
+    blocked_fields = {'prestador_id', 'usuario_id', 'aprobada', 'estado_admin', 'creado_por', 'estado_revision'}
+    errors = reject_unknown_fields(form_data, allowed_fields, blocked_fields)
 
-    try:
-        experiencia_int = int(experiencia)
-    except ValueError as exc:
-        raise ValueError('La experiencia debe ser un número válido.') from exc
+    titulo = add_required_text(errors, 'titulo', form_data.get('titulo'), 'El título', min_len=5, max_len=255)
+    descripcion = add_required_text(errors, 'descripcion', form_data.get('descripcion'), 'La descripción', min_len=20, max_len=4000)
+    categoria = add_required_text(errors, 'categoria', form_data.get('categoria'), 'La categoría', max_len=100)
+    precio_decimal = parse_positive_decimal(errors, 'salario', form_data.get('salario'), 'El precio', required=True, maximum=1000000)
+    ubicacion = add_required_text(errors, 'ubicacion', form_data.get('ubicacion'), 'La ubicación', min_len=3, max_len=255)
+    experiencia_int = parse_int_range(errors, 'experiencia', form_data.get('experiencia'), 'La experiencia', minimum=0, maximum=80, required=True)
+    habilidades = add_optional_text(errors, 'habilidades', form_data.get('habilidades'), 'Las habilidades', 500)
+    disponibilidad = add_optional_text(errors, 'disponibilidad', form_data.get('disponibilidad'), 'La disponibilidad', 100)
+    tipo_precio = clean_text(form_data.get('tipo_precio') or 'hora')
+    incluye_materiales = form_data.get('incluye_materiales') == 'on'
+
+    if tipo_precio not in {'hora', 'servicio', 'dia', 'proyecto'}:
+        errors['tipo_precio'] = 'El tipo de precio no es válido.'
+    if cursor and categoria and not category_exists(cursor, categoria):
+        errors['categoria'] = 'Selecciona una categoría disponible.'
 
     return {
         'titulo': titulo,
@@ -1046,7 +1175,7 @@ def leer_datos_publicacion_form():
         'disponibilidad': disponibilidad,
         'tipo_precio': tipo_precio,
         'incluye_materiales': incluye_materiales
-    }
+    }, errors
 
 
 # ==================== RUTAS PRINCIPALES ====================
@@ -1069,17 +1198,19 @@ def dashboard():
 @app.route('/registrar_usuario_web', methods=['POST'])
 def registrar_usuario_web():
     if request.method == 'POST':
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         errors = {}
 
-        email = data.get('email', '').strip()
-        password = data.get('password', '').strip()
-        confirm_password = data.get('confirmPassword', '').strip()
-        user_type = data.get('userType', '').strip().lower()
+        email = clean_text(data.get('email', '')).lower()
+        password = data.get('password') or ''
+        confirm_password = data.get('confirmPassword') or ''
+        user_type = clean_text(data.get('userType', '')).lower()
         terms_checked = data.get('termsCheck') == 'on'
 
         if not email:
             errors['email'] = 'El correo electrónico es obligatorio.'
+        elif len(email) > 150:
+            errors['email'] = 'El correo electrónico debe tener máximo 150 caracteres.'
         elif not is_valid_email(email):
             errors['email'] = 'Introduce un correo electrónico válido (ej. usuario@dominio.com).'
 
@@ -1105,31 +1236,33 @@ def registrar_usuario_web():
             conn = get_db_connection()
             cursor = conn.cursor()
 
-            cursor.execute("SELECT id FROM Usuarios WHERE Email = ?", (email,))
+            cursor.execute("SELECT id FROM Usuarios WHERE LOWER(Email) = ?", (email,))
             if cursor.fetchone():
                 errors['email'] = 'Este correo electrónico ya está registrado.'
 
-            first_name = data.get('firstName', '').strip()
-            last_name_p = data.get('lastNameP', '').strip()
-            last_name_m = data.get('lastNameM', '').strip()
-            candidate_phone = data.get('candidatePhone', '').strip()
-
-            first_name = ' '.join(word.capitalize() for word in first_name.split())
-            last_name_p = ' '.join(word.capitalize() for word in last_name_p.split())
-            last_name_m = ' '.join(word.capitalize() for word in last_name_m.split())
+            first_name = clean_text(data.get('firstName', ''))
+            last_name_p = clean_text(data.get('lastNameP', ''))
+            last_name_m = clean_text(data.get('lastNameM', ''))
+            candidate_phone = clean_text(data.get('candidatePhone', ''))
 
             if not first_name:
                 errors['firstName'] = 'El nombre es obligatorio.'
+            elif len(first_name) > 100:
+                errors['firstName'] = 'El nombre debe tener máximo 100 caracteres.'
             elif not is_valid_person_name_field(first_name):
                 errors['firstName'] = 'Solo se permiten letras, espacios y acentos en el nombre.'
 
             if not last_name_p:
                 errors['lastNameP'] = 'El apellido paterno es obligatorio.'
+            elif len(last_name_p) > 100:
+                errors['lastNameP'] = 'El apellido paterno debe tener máximo 100 caracteres.'
             elif not is_valid_person_name_field(last_name_p, is_apellido=True):
                 errors['lastNameP'] = 'Solo se permite un apellido en el campo de apellido paterno.'
 
             if not last_name_m:
                 errors['lastNameM'] = 'El apellido materno es obligatorio.'
+            elif len(last_name_m) > 100:
+                errors['lastNameM'] = 'El apellido materno debe tener máximo 100 caracteres.'
             elif not is_valid_person_name_field(last_name_m, is_apellido=True):
                 errors['lastNameM'] = 'Solo se permite un apellido en el campo de apellido materno.'
 
@@ -1137,7 +1270,8 @@ def registrar_usuario_web():
                 errors['candidatePhone'] = 'El número de teléfono debe contener entre 10 y 20 dígitos numéricos.'
 
             if errors:
-                return jsonify({'success': False, 'errors': errors, 'message': 'Errores de validación.'}), 400
+                status_code = 409 if 'email' in errors and 'registrado' in errors['email'] else 400
+                return jsonify({'success': False, 'errors': errors, 'message': 'Errores de validación.'}), status_code
 
             conn.autocommit = False
             try:
@@ -1189,8 +1323,8 @@ def registrar_usuario_web():
 @app.route('/login', methods=['POST'])
 def login_usuario():
     if request.method == 'POST':
-        correo = request.form.get('email', '').strip()
-        contrasena_ingresada = request.form.get('password', '').strip()
+        correo = clean_text(request.form.get('email', '')).lower()
+        contrasena_ingresada = request.form.get('password', '')
 
         if not correo or not contrasena_ingresada:
             return jsonify({'success': False, 'message': 'Por favor, ingresa tu correo y contraseña.'}), 400
@@ -1329,15 +1463,18 @@ def get_user_data():
 def mobile_auth_login():
     data = request.get_json(silent=True) or request.form
     correo = (data.get('email') or '').strip().lower()
-    contrasena_ingresada = (data.get('password') or '').strip()
+    contrasena_ingresada = data.get('password') or ''
     device_name = (request.headers.get('X-Device-Name') or data.get('device_name') or '').strip()[:255] or None
+    errors = {}
 
-    if not correo or not contrasena_ingresada:
-        return jsonify({'success': False, 'message': 'Correo y contraseña son obligatorios'}), 400
-    try:
-        validate_email(correo, check_deliverability=False)
-    except EmailNotValidError:
-        return jsonify({'success': False, 'message': 'Correo inválido'}), 400
+    if not correo:
+        errors['email'] = 'El correo es obligatorio.'
+    elif len(correo) > 150 or not is_valid_email(correo):
+        errors['email'] = 'Ingresa un correo válido.'
+    if not contrasena_ingresada:
+        errors['password'] = 'La contraseña es obligatoria.'
+    if errors:
+        return validation_response(errors)
 
     conn = None
     try:
@@ -1731,7 +1868,9 @@ def crear_publicacion():
         conn = get_db_connection()
         cursor = conn.cursor()
         ensure_control_schema(cursor)
-        datos = leer_datos_publicacion_form()
+        datos, errors = validar_datos_publicacion(request.form, cursor)
+        if errors:
+            return validation_response(errors)
         imagenes = request.files.getlist('imagenes')
 
         sql_insert = """
@@ -2572,21 +2711,58 @@ def mobile_enviar_solicitud():
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        publicacion_id = request.form.get('publicacion_id', '').strip()
-        fecha_servicio = request.form.get('fecha_servicio', '').strip()
-        hora_servicio = request.form.get('hora_servicio', '').strip()
-        mensaje = request.form.get('mensaje', '').strip()
+        allowed_fields = {'publicacion_id', 'fecha_servicio', 'hora_servicio', 'mensaje'}
+        blocked_fields = {'cliente_id', 'prestador_id', 'estado', 'usuario_id'}
+        errors = reject_unknown_fields(request.form, allowed_fields, blocked_fields)
 
-        if not publicacion_id:
-            return jsonify({'success': False, 'message': 'ID de publicación es obligatorio.'}), 400
-        if not fecha_servicio:
-            return jsonify({'success': False, 'message': 'La fecha del servicio es obligatoria.'}), 400
+        publicacion_id_raw = clean_text(request.form.get('publicacion_id'))
+        try:
+            publicacion_id = int(publicacion_id_raw)
+            if publicacion_id <= 0:
+                errors['publicacion_id'] = 'La publicación no es válida.'
+        except (TypeError, ValueError):
+            publicacion_id = None
+            errors['publicacion_id'] = 'La publicación no es válida.'
 
-        cursor.execute("SELECT UsuarioId FROM Publicaciones WHERE id = ? AND Activa = 1 AND EstadoRevision = 'aprobada'", (publicacion_id,))
+        fecha_servicio = parse_iso_date(errors, 'fecha_servicio', request.form.get('fecha_servicio'), 'La fecha del servicio')
+        hora_servicio = parse_hhmm_time(errors, 'hora_servicio', request.form.get('hora_servicio'), 'La hora del servicio', required=False)
+        mensaje = add_optional_text(errors, 'mensaje', request.form.get('mensaje'), 'El mensaje', 1000)
+
+        if errors:
+            return validation_response(errors)
+
+        cursor.execute("""
+            SELECT UsuarioId
+            FROM Publicaciones p
+            WHERE p.id = ?
+              AND p.Activa = 1
+              AND EXISTS (
+                  SELECT 1 FROM PublicacionVersiones pv
+                  WHERE pv.PublicacionId = p.id
+                    AND pv.Estado = 'aprobada'
+                    AND pv.EsVersionPublica = 1
+              )
+        """, (publicacion_id,))
         publicacion = cursor.fetchone()
         if not publicacion:
             return jsonify({'success': False, 'message': 'Publicación no encontrada o no activa.'}), 404
         prestador_id = publicacion[0]
+        if prestador_id == user_id:
+            return validation_response({'publicacion_id': 'No puedes solicitar tu propia publicación.'})
+
+        cursor.execute("""
+            SELECT TOP 1 id
+            FROM SolicitudesServicios
+            WHERE PublicacionId = ?
+              AND ClienteId = ?
+              AND Estado IN ('pendiente', 'aceptada')
+        """, (publicacion_id, user_id))
+        if cursor.fetchone():
+            return jsonify({
+                'success': False,
+                'message': 'Ya tienes una solicitud activa para esta publicación.',
+                'errors': {'publicacion_id': 'Ya tienes una solicitud activa para esta publicación.'}
+            }), 409
 
         cursor.execute("""
             INSERT INTO SolicitudesServicios (PublicacionId, ClienteId, PrestadorId, FechaServicio, HoraServicio, MensajeCliente, Estado)
@@ -2599,7 +2775,7 @@ def mobile_enviar_solicitud():
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
         print(f"Error de base de datos al enviar solicitud móvil (sqlstate: {sqlstate}): {ex}")
-        return jsonify({'success': False, 'message': 'Ocurrió un error en la base de datos.'}), 500
+        return jsonify({'success': False, 'message': 'No fue posible enviar la solicitud.'}), 500
     except Exception as e:
         print(f"Error inesperado al enviar solicitud móvil: {e}")
         return jsonify({'success': False, 'message': 'Ocurrió un error inesperado.'}), 500
@@ -2724,7 +2900,9 @@ def mobile_crear_publicacion():
         conn = get_db_connection()
         cursor = conn.cursor()
         ensure_control_schema(cursor)
-        datos = leer_datos_publicacion_form()
+        datos, errors = validar_datos_publicacion(request.form, cursor)
+        if errors:
+            return validation_response(errors)
         imagenes = request.files.getlist('imagenes')
 
         cursor.execute("""
@@ -2759,7 +2937,7 @@ def mobile_crear_publicacion():
             conn.rollback()
         sqlstate = ex.args[0]
         print(f"Error de base de datos al crear publicación móvil (sqlstate: {sqlstate}): {ex}")
-        return jsonify({'success': False, 'message': 'Ocurrió un error en la base de datos.'}), 500
+        return jsonify({'success': False, 'message': 'No fue posible crear la publicación.'}), 500
     except Exception as e:
         if conn:
             conn.rollback()

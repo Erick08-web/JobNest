@@ -19,6 +19,18 @@ type ParsedResponse<T> = {
 
 let refreshPromise: Promise<StoredTokens> | null = null;
 
+export class ApiError extends Error {
+  status: number;
+  errors: Record<string, string>;
+
+  constructor(message: string, status: number, errors: Record<string, string> = {}) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.errors = errors;
+  }
+}
+
 export function getDefaultApiUrl() {
   const scriptUrl = NativeModules.SourceCode?.scriptURL;
 
@@ -94,8 +106,8 @@ async function requestWithJwt<T>(
   }
 
   if (!response.ok) {
-    const errorData = parsed.data as { message?: string; error?: string };
-    throw new Error(errorData?.message || errorData?.error || `Error ${response.status}`);
+    const errorData = parsed.data as { message?: string; error?: string; errors?: Record<string, string> };
+    throw new ApiError(errorData?.message || errorData?.error || `Error ${response.status}`, response.status, errorData?.errors ?? {});
   }
 
   return parsed.data;
