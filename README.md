@@ -26,7 +26,7 @@ JobNest/
 Crea o revisa el archivo `.env` en la raiz del proyecto. Ejemplo local:
 
 ```env
-FLASK_SECRET_KEY=jobnest_dev_secret
+FLASK_SECRET_KEY=replace-with-a-long-random-local-value
 DB_DRIVER={ODBC Driver 18 for SQL Server}
 DB_SERVER=127.0.0.1,1433
 DB_NAME=JobNest
