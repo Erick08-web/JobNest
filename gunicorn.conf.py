@@ -10,4 +10,5 @@ keepalive = int(os.environ.get('GUNICORN_KEEPALIVE', '5'))
 
 accesslog = '-'
 errorlog = '-'
-loglevel = os.environ.get('GUNICORN_LOG_LEVEL', 'info')
+loglevel = os.environ.get('GUNICORN_LOG_LEVEL', os.environ.get('LOG_LEVEL', 'info')).lower()
+access_log_format = '%(h)s %(l)s %(u)s %(t)s "%(r)s" %(s)s %(b)s "%(f)s" "%(a)s" request_id="%({X-Request-ID}i)s"'

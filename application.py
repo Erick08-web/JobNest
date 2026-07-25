@@ -37,6 +37,27 @@ from flask_jwt_extended import (
     get_jwt_identity,
     jwt_required,
 )
+from werkzeug.exceptions import HTTPException
+
+from observability import (
+    APP_VERSION,
+    INSTANCE_ID,
+    configure_logging,
+    finish_request_observability,
+    log_exception,
+    metrics_response,
+    record_auth_event,
+    record_business_event,
+    record_security_warning,
+    set_sql_availability,
+    start_request_observability,
+)
+
+logger = configure_logging()
+
+
+def print(*args, **kwargs):
+    logger.info(' '.join(str(arg) for arg in args))
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY')
@@ -88,6 +109,63 @@ def apply_cors_headers(response):
     if request.method == 'OPTIONS':
         response.status_code = 204
     return response
+
+
+@app.before_request
+def before_request_observability():
+    start_request_observability()
+
+
+@app.after_request
+def after_request_observability(response):
+    return finish_request_observability(response)
+
+
+def is_api_request():
+    return (
+        request.path.startswith('/api/')
+        or request.path.startswith('/admin/')
+        or request.path in {'/health', '/health/ready', '/metrics', '/login', '/registro'}
+        or request.accept_mimetypes.best == 'application/json'
+        or request.is_json
+    )
+
+
+def api_error_response(status_code, message):
+    return jsonify({
+        'success': False,
+        'message': message,
+        'request_id': getattr(g, 'request_id', None),
+        'instance': INSTANCE_ID,
+    }), status_code
+
+
+@app.errorhandler(HTTPException)
+def handle_http_exception(error):
+    if is_api_request():
+        messages = {
+            400: 'Solicitud inválida.',
+            401: 'No autenticado.',
+            403: 'No tienes permiso para realizar esta acción.',
+            404: 'Recurso no encontrado.',
+            405: 'Método no permitido.',
+            413: 'Archivo demasiado grande.',
+            415: 'Tipo de contenido no permitido.',
+            429: 'Demasiadas solicitudes.',
+            503: 'Servicio no disponible.',
+        }
+        return api_error_response(error.code or 500, messages.get(error.code, 'No fue posible completar la solicitud.'))
+    return error
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_exception(error):
+    if isinstance(error, HTTPException):
+        return handle_http_exception(error)
+    log_exception(logger, 'unexpected_exception')
+    if is_api_request():
+        return api_error_response(500, 'Ocurrió un error interno. Intenta nuevamente más tarde.')
+    return 'Ocurrió un error interno.', 500
 
 # Configuración BD
 DB_CONFIG = {
@@ -252,7 +330,13 @@ def get_db_connection():
 
 @app.route('/health')
 def health():
-    return jsonify({'success': True, 'status': 'ok'}), 200
+    return jsonify({
+        'status': 'ok',
+        'service': 'jobnest-api',
+        'instance': INSTANCE_ID,
+        'version': APP_VERSION,
+        'request_id': getattr(g, 'request_id', None),
+    }), 200
 
 
 @app.route('/health/ready')
@@ -262,13 +346,33 @@ def health_ready():
             cursor = cnxn.cursor()
             cursor.execute('SELECT 1')
             cursor.fetchone()
-        return jsonify({'success': True, 'status': 'ready'}), 200
-    except Exception as exc:
+        set_sql_availability(True)
         return jsonify({
-            'success': False,
+            'status': 'ready',
+            'database': 'available',
+            'service': 'jobnest-api',
+            'instance': INSTANCE_ID,
+            'request_id': getattr(g, 'request_id', None),
+        }), 200
+    except Exception as exc:
+        set_sql_availability(False)
+        logger.warning('database_readiness_failed', extra={
+            'request_id': getattr(g, 'request_id', None),
+            'event': 'database.readiness_failed',
+            'sqlstate': getattr(exc, 'args', [''])[0] if getattr(exc, 'args', None) else None,
+        })
+        return jsonify({
             'status': 'not_ready',
-            'message': str(exc)
+            'database': 'unavailable',
+            'service': 'jobnest-api',
+            'instance': INSTANCE_ID,
+            'request_id': getattr(g, 'request_id', None),
         }), 503
+
+
+@app.route('/metrics')
+def metrics():
+    return metrics_response()
 
 def enviar_correo_bienvenida(email, tipo_usuario):
     if tipo_usuario == 'cliente':
@@ -729,29 +833,43 @@ def mobile_role_required(*roles):
 
 @jwt.expired_token_loader
 def jwt_expired_callback(jwt_header, jwt_payload):
+    record_security_warning('jwt.expired')
+    if request.path == '/api/mobile/auth/refresh':
+        record_auth_event('refresh', 'failed', 'mobile')
     return jsonify({'success': False, 'message': 'Token expirado'}), 401
 
 
 @jwt.invalid_token_loader
 def jwt_invalid_callback(reason):
+    record_security_warning('jwt.invalid')
+    if request.path == '/api/mobile/auth/refresh':
+        record_auth_event('refresh', 'failed', 'mobile')
     return jsonify({'success': False, 'message': 'Token inválido'}), 401
 
 
 @jwt.unauthorized_loader
 def jwt_missing_callback(reason):
+    record_security_warning('jwt.missing')
+    if request.path == '/api/mobile/auth/refresh':
+        record_auth_event('refresh', 'failed', 'mobile')
     return jsonify({'success': False, 'message': 'Token requerido'}), 401
 
 
 @jwt.revoked_token_loader
 def jwt_revoked_callback(jwt_header, jwt_payload):
+    record_security_warning('jwt.revoked')
+    if request.path == '/api/mobile/auth/refresh':
+        record_auth_event('refresh', 'failed', 'mobile')
     return jsonify({'success': False, 'message': 'Token revocado'}), 401
 
 
 def require_admin_session():
     if 'usuario_autenticado' not in session or not session['usuario_autenticado']:
+        record_security_warning('admin.unauthenticated_access')
         return jsonify({'success': False, 'message': 'No autenticado'}), 401
 
     if session.get('tipo_usuario') != 'administrador':
+        record_security_warning('admin.forbidden_access', role=session.get('tipo_usuario'))
         return jsonify({'success': False, 'message': 'Solo administradores pueden acceder a esta sección.'}), 403
 
     return None
@@ -1403,10 +1521,10 @@ def login_usuario():
                 ultima_sesion = resultado[5]
 
                 if not activo:
+                    record_auth_event('login', 'failed_inactive', 'web')
                     return jsonify({'success': False, 'message': 'Tu cuenta está desactivada. Contacta al administrador.'}), 401
 
                 if verificar_password(contrasena_hasheada_db, contrasena_ingresada):
-                    print("Inicio de sesión exitoso.")
                     if password_necesita_rehash(contrasena_hasheada_db):
                         cursor.execute(
                             "UPDATE Usuarios SET PasswordHash = ?, UltimoLogin = ? WHERE id = ?",
@@ -1441,12 +1559,15 @@ def login_usuario():
                         session['telefono'] = ''
                         session['foto_perfil'] = None
 
+                    g.safe_user_id = user_id
+                    g.safe_user_role = tipo_usuario
+                    record_auth_event('login', 'success', 'web')
                     return jsonify({'success': True, 'message': '¡Bienvenido! has iniciado sesión exitosamente.'}), 200
                 else:
-                    print("Contraseña incorrecta.")
+                    record_auth_event('login', 'failed', 'web')
                     return jsonify({'success': False, 'message': 'Contraseña incorrecta. por favor, inténtalo de nuevo.'}), 401
             else:
-                print("Correo electrónico no encontrado.")
+                record_auth_event('login', 'failed', 'web')
                 return jsonify({'success': False, 'message': 'Correo electrónico no registrado.'}), 404
 
         except pyodbc.Error as ex:
@@ -1543,8 +1664,10 @@ def mobile_auth_login():
         resultado = cursor.fetchone()
 
         if not resultado or not verificar_password(resultado[1], contrasena_ingresada):
+            record_auth_event('login', 'failed', 'mobile')
             return jsonify({'success': False, 'message': 'Credenciales incorrectas'}), 401
         if not resultado[2]:
+            record_auth_event('login', 'failed_inactive', 'mobile')
             return jsonify({'success': False, 'message': 'Cuenta inactiva'}), 403
 
         user = {
@@ -1559,6 +1682,7 @@ def mobile_auth_login():
         }
 
         if user['tipo_usuario'] == 'administrador':
+            record_auth_event('login', 'failed_admin_mobile', 'mobile')
             return jsonify({
                 'success': False,
                 'message': 'La administración debe realizarse desde JobNest V2 web.'
@@ -1575,6 +1699,9 @@ def mobile_auth_login():
         access_token, refresh_token = issue_mobile_tokens(cursor, user, device_name)
         conn.commit()
 
+        g.safe_user_id = user['id']
+        g.safe_user_role = user['tipo_usuario']
+        record_auth_event('login', 'success', 'mobile')
         return jsonify({
             'success': True,
             'token_type': 'Bearer',
@@ -1587,6 +1714,7 @@ def mobile_auth_login():
         }), 200
 
     except RuntimeError as e:
+        record_auth_event('login', 'failed_config', 'mobile')
         return jsonify({'success': False, 'message': str(e)}), 500
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
@@ -1619,6 +1747,7 @@ def mobile_auth_refresh():
     try:
         user_id = int(get_jwt_identity())
     except (TypeError, ValueError):
+        record_auth_event('refresh', 'failed', 'mobile')
         return jsonify({'success': False, 'message': 'Token inválido'}), 401
 
     conn = None
@@ -1628,14 +1757,17 @@ def mobile_auth_refresh():
         cursor = conn.cursor()
         user = fetch_mobile_user(cursor, user_id)
         if not user:
+            record_auth_event('refresh', 'failed', 'mobile')
             return jsonify({'success': False, 'message': 'Usuario no encontrado'}), 401
         if not user['activo']:
             revoke_user_refresh_tokens(cursor, user_id)
             conn.commit()
+            record_auth_event('refresh', 'failed_inactive', 'mobile')
             return jsonify({'success': False, 'message': 'Cuenta inactiva'}), 403
         if user['tipo_usuario'] == 'administrador':
             revoke_user_refresh_tokens(cursor, user_id)
             conn.commit()
+            record_auth_event('refresh', 'failed_admin_mobile', 'mobile')
             return jsonify({'success': False, 'message': 'La administración debe realizarse desde JobNest V2 web.'}), 403
 
         record, error = validate_refresh_token_record(cursor, user_id, claims['jti'], refresh_token)
@@ -1643,6 +1775,8 @@ def mobile_auth_refresh():
             if error in {'desconocido', 'revocado'}:
                 revoke_user_refresh_tokens(cursor, user_id)
                 conn.commit()
+                record_security_warning('refresh.reuse_or_revoked')
+            record_auth_event('refresh', 'failed', 'mobile')
             return jsonify({'success': False, 'message': 'Sesión inválida'}), 401
 
         access_token, new_refresh_token = issue_mobile_tokens(cursor, user, request.headers.get('X-Device-Name'))
@@ -1650,6 +1784,9 @@ def mobile_auth_refresh():
         revoke_refresh_token(cursor, record[0], new_refresh_jti)
         conn.commit()
 
+        g.safe_user_id = user['id']
+        g.safe_user_role = user['tipo_usuario']
+        record_auth_event('refresh', 'success', 'mobile')
         return jsonify({
             'success': True,
             'token_type': 'Bearer',
@@ -1662,6 +1799,7 @@ def mobile_auth_refresh():
         }), 200
 
     except RuntimeError as e:
+        record_auth_event('refresh', 'failed_config', 'mobile')
         return jsonify({'success': False, 'message': str(e)}), 500
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
@@ -1707,6 +1845,7 @@ def mobile_auth_logout():
                     pass
 
         conn.commit()
+        record_auth_event('logout', 'success', 'mobile')
         return jsonify({'success': True, 'message': 'Sesión móvil cerrada'}), 200
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
@@ -1947,6 +2086,7 @@ def crear_publicacion():
                      f"{datos['titulo']} fue enviada a revisión administrativa.",
                      publicacion_id=nueva_publicacion_id, version_id=version_id, rol_destino='administrador')
         conn.commit()
+        record_business_event('publicacion_creada', 'web')
         return jsonify({'success': True, 'message': 'Publicación enviada a revisión del administrador. Aparecerá en marketplace cuando sea aprobada.'}), 200
 
     except ValueError as e:
@@ -2625,6 +2765,7 @@ def enviar_solicitud():
         """
         enviar_correo_notificacion(prestador_email, "Nueva solicitud en JobNest", cuerpo)
 
+        record_business_event('solicitud_creada', 'web')
         return jsonify({'success': True, 'message': 'Solicitud enviada exitosamente.'}), 200
 
     except pyodbc.Error as ex:
@@ -2822,6 +2963,7 @@ def mobile_enviar_solicitud():
         """, (publicacion_id, user_id, prestador_id, fecha_servicio, hora_servicio, cifrar_dato(mensaje) if mensaje else None, 'pendiente'))
         conn.commit()
 
+        record_business_event('solicitud_creada', 'mobile')
         return jsonify({'success': True, 'message': 'Solicitud enviada exitosamente.'}), 200
 
     except pyodbc.Error as ex:
@@ -2978,6 +3120,7 @@ def mobile_crear_publicacion():
                      f"{datos['titulo']} fue enviada a revisión administrativa.",
                      publicacion_id=nueva_publicacion_id, version_id=version_id, rol_destino='administrador')
         conn.commit()
+        record_business_event('publicacion_creada', 'mobile')
         return jsonify({'success': True, 'message': 'Publicación enviada a revisión del administrador. Aparecerá en marketplace cuando sea aprobada.'}), 200
 
     except ValueError as e:

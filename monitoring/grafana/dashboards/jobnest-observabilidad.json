@@ -1,0 +1,102 @@
+{
+  "uid": "jobnest-observabilidad",
+  "title": "JobNest V2 Observabilidad",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "tags": ["jobnest", "v2"],
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Peticiones por minuto",
+      "gridPos": {"x": 0, "y": 0, "w": 8, "h": 6},
+      "targets": [{"expr": "sum(rate(jobnest_http_requests_total[1m])) * 60", "legendFormat": "rpm"}]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Respuestas por codigo HTTP",
+      "gridPos": {"x": 8, "y": 0, "w": 8, "h": 6},
+      "targets": [{"expr": "sum(rate(jobnest_http_requests_total[5m])) by (status)", "legendFormat": "{{status}}"}]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Errores 4xx",
+      "gridPos": {"x": 16, "y": 0, "w": 8, "h": 6},
+      "targets": [{"expr": "sum(rate(jobnest_http_errors_total{family=\"4xx\"}[5m])) by (instance)", "legendFormat": "{{instance}}"}]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Errores 5xx",
+      "gridPos": {"x": 0, "y": 6, "w": 8, "h": 6},
+      "targets": [{"expr": "sum(rate(jobnest_http_errors_total{family=\"5xx\"}[5m])) by (instance)", "legendFormat": "{{instance}}"}]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Latencia promedio",
+      "gridPos": {"x": 8, "y": 6, "w": 8, "h": 6},
+      "targets": [{"expr": "sum(rate(jobnest_http_request_duration_seconds_sum[5m])) / sum(rate(jobnest_http_request_duration_seconds_count[5m]))", "legendFormat": "promedio"}]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Percentil 95 de duracion",
+      "gridPos": {"x": 16, "y": 6, "w": 8, "h": 6},
+      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(jobnest_http_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p95"}]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Peticiones por instancia",
+      "gridPos": {"x": 0, "y": 12, "w": 8, "h": 6},
+      "targets": [{"expr": "sum(rate(jobnest_http_requests_total[5m])) by (instance)", "legendFormat": "{{instance}}"}]
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Estado api1",
+      "gridPos": {"x": 8, "y": 12, "w": 4, "h": 6},
+      "targets": [{"expr": "up{job=\"jobnest-api\", instance=\"api1:5000\"}", "legendFormat": "api1"}]
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Estado api2",
+      "gridPos": {"x": 12, "y": 12, "w": 4, "h": 6},
+      "targets": [{"expr": "up{job=\"jobnest-api\", instance=\"api2:5000\"}", "legendFormat": "api2"}]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Logins exitosos y fallidos",
+      "gridPos": {"x": 16, "y": 12, "w": 8, "h": 6},
+      "targets": [{"expr": "sum(rate(jobnest_auth_events_total{event=\"login\"}[5m])) by (result, channel)", "legendFormat": "{{channel}} {{result}}"}]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Refresh exitosos y fallidos",
+      "gridPos": {"x": 0, "y": 18, "w": 8, "h": 6},
+      "targets": [{"expr": "sum(rate(jobnest_auth_events_total{event=\"refresh\"}[5m])) by (result)", "legendFormat": "{{result}}"}]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Publicaciones creadas",
+      "gridPos": {"x": 8, "y": 18, "w": 8, "h": 6},
+      "targets": [{"expr": "sum(rate(jobnest_business_events_total{event=\"publicacion_creada\"}[5m])) by (channel)", "legendFormat": "{{channel}}"}]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Solicitudes creadas",
+      "gridPos": {"x": 16, "y": 18, "w": 8, "h": 6},
+      "targets": [{"expr": "sum(rate(jobnest_business_events_total{event=\"solicitud_creada\"}[5m])) by (channel)", "legendFormat": "{{channel}}"}]
+    }
+  ]
+}

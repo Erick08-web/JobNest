@@ -1,0 +1,47 @@
+groups:
+  - name: jobnest-api
+    rules:
+      - alert: JobNestApiCaida
+        expr: up{job="jobnest-api"} == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Una instancia de JobNest API no responde"
+          description: "Prometheus no puede consultar {{ $labels.instance }} durante mas de 1 minuto."
+
+      - alert: JobNestErrores5xxElevados
+        expr: sum(rate(jobnest_http_requests_total{status=~"5.."}[5m])) by (instance) > 0.2
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Errores 5xx elevados en JobNest"
+          description: "La instancia {{ $labels.instance }} tiene una tasa elevada de errores 5xx."
+
+      - alert: JobNestLatenciaP95Elevada
+        expr: histogram_quantile(0.95, sum(rate(jobnest_http_request_duration_seconds_bucket[5m])) by (le, instance)) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Latencia p95 elevada en JobNest"
+          description: "La instancia {{ $labels.instance }} supera 2s de p95 durante varios minutos."
+
+      - alert: JobNestSqlServerNoDisponible
+        expr: jobnest_sqlserver_available == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SQL Server no disponible para JobNest"
+          description: "La instancia {{ $labels.instance }} reporta SQL Server como no disponible."
+
+      - alert: JobNestLoginFallidoElevado
+        expr: sum(rate(jobnest_auth_events_total{event="login",result=~"failed.*"}[5m])) by (instance, channel) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Intentos de login fallidos elevados"
+          description: "Login fallido elevado en {{ $labels.channel }} para {{ $labels.instance }}."
