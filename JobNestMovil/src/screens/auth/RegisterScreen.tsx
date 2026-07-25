@@ -9,7 +9,7 @@ import type { UserType } from '../../types/domain';
 export function RegisterScreen({
   onRegistered,
 }: {
-  onRegistered: (credentials: { email: string; password: string }) => void;
+  onRegistered: (credentials: { email: string }) => void;
 }) {
   const { apiFetch, setLoading, setApiMessage } = useAuth();
   const [registerType, setRegisterType] = useState<UserType>('Cliente');
@@ -39,7 +39,7 @@ export function RegisterScreen({
         registerPassword,
       });
       Alert.alert('Cuenta creada', 'Ahora puedes iniciar sesion en JobNestMovil.');
-      onRegistered({ email: registerEmail, password: registerPassword });
+      onRegistered({ email: registerEmail });
     } catch (error) {
       Alert.alert('No se pudo registrar', error instanceof Error ? error.message : 'Revisa la conexion con la API.');
     } finally {

@@ -1,23 +1,26 @@
-import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ApiOptions } from '../services/api';
 import { apiRequest, getDefaultApiUrl } from '../services/api';
+import { fetchCurrentUser, login as loginRequest, logout as logoutRequest } from '../services/authService';
+import { clearTokens, getStoredTokens, saveTokens, type StoredTokens } from '../services/tokenStorage';
 import type { SessionUser, UserType } from '../types/domain';
 import { normalizeUserType } from '../utils/formatters';
 
 type AuthContextValue = {
   apiUrl: string;
   setApiUrl: (value: string) => void;
-  sessionCookie: string;
+  tokens: StoredTokens | null;
   user: SessionUser | null;
   currentUserType: UserType;
   isLoggedIn: boolean;
+  isRestoring: boolean;
   loading: boolean;
   setLoading: (value: boolean) => void;
   apiMessage: string;
   setApiMessage: (value: string) => void;
   apiFetch: <T>(path: string, options?: ApiOptions) => Promise<T>;
-  setUser: (user: SessionUser | null) => void;
-  logout: () => void;
+  login: (email: string, password: string) => Promise<void>;
+  logout: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -26,39 +29,106 @@ export const DEFAULT_API_URL = getDefaultApiUrl();
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [apiUrl, setApiUrl] = useState(DEFAULT_API_URL);
-  const [sessionCookie, setSessionCookie] = useState('');
+  const [tokens, setTokens] = useState<StoredTokens | null>(null);
   const [user, setUser] = useState<SessionUser | null>(null);
+  const [isRestoring, setIsRestoring] = useState(true);
   const [loading, setLoading] = useState(false);
   const [apiMessage, setApiMessage] = useState('');
 
   const apiFetch = useCallback(
-    <T,>(path: string, options: ApiOptions = {}) => apiRequest<T>(apiUrl, sessionCookie, path, options, setSessionCookie),
-    [apiUrl, sessionCookie],
+    <T,>(path: string, options: ApiOptions = {}) =>
+      apiRequest<T>(apiUrl, path, options, {
+        onTokens: setTokens,
+        onUnauthorized: () => {
+          setTokens(null);
+          setUser(null);
+        },
+      }),
+    [apiUrl],
   );
 
-  const logout = useCallback(() => {
-    setUser(null);
-    setSessionCookie('');
+  useEffect(() => {
+    let mounted = true;
+
+    async function restoreSession() {
+      setIsRestoring(true);
+      try {
+        const storedTokens = await getStoredTokens();
+        if (!mounted) return;
+        if (!storedTokens) {
+          setTokens(null);
+          setUser(null);
+          return;
+        }
+
+        setTokens(storedTokens);
+        const currentUser = await fetchCurrentUser(apiFetch);
+        if (!mounted) return;
+        setUser(currentUser);
+      } catch {
+        await clearTokens();
+        if (!mounted) return;
+        setTokens(null);
+        setUser(null);
+      } finally {
+        if (mounted) setIsRestoring(false);
+      }
+    }
+
+    void restoreSession();
+    return () => {
+      mounted = false;
+    };
+  }, [apiFetch]);
+
+  const login = useCallback(async (email: string, password: string) => {
+    setLoading(true);
     setApiMessage('');
-  }, []);
+    try {
+      const response = await loginRequest(apiFetch, email, password);
+      const nextTokens = {
+        accessToken: response.access_token,
+        refreshToken: response.refresh_token,
+      };
+      await saveTokens(nextTokens);
+      setTokens(nextTokens);
+      setUser(response.user);
+    } finally {
+      setLoading(false);
+    }
+  }, [apiFetch]);
+
+  const logout = useCallback(async () => {
+    const storedTokens = tokens ?? await getStoredTokens();
+    try {
+      await logoutRequest(apiFetch, storedTokens);
+    } catch {
+      // El cierre local debe completarse aunque no haya conexión con Flask.
+    }
+    await clearTokens();
+    setTokens(null);
+    setUser(null);
+    setApiMessage('');
+  }, [apiFetch, tokens]);
 
   const value = useMemo(
     () => ({
       apiUrl,
       setApiUrl,
-      sessionCookie,
+      tokens,
       user,
       currentUserType: normalizeUserType(user?.tipo_usuario),
       isLoggedIn: Boolean(user),
+      isRestoring,
       loading,
       setLoading,
       apiMessage,
       setApiMessage,
       apiFetch,
-      setUser,
+      login,
       logout,
     }),
-    [apiFetch, apiMessage, apiUrl, loading, logout, sessionCookie, user],
+    [apiFetch, apiMessage, apiUrl, isRestoring, loading, login, logout, tokens, user],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

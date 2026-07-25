@@ -1,4 +1,6 @@
 import os
+import hashlib
+import hmac
 
 
 def cargar_env_local(ruta='.env'):
@@ -13,22 +15,39 @@ def cargar_env_local(ruta='.env'):
             os.environ.setdefault(clave.strip(), valor.strip().strip('"').strip("'"))
 
 cargar_env_local()
-from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, send_from_directory, abort
+from functools import wraps
+from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, send_from_directory, abort, g
 import pyodbc
 import uuid
 from passlib.hash import argon2
 from werkzeug.security import check_password_hash as verificar_hash_legacy
 from email_validator import validate_email, EmailNotValidError
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import re
 from flask_mail import Mail, Message
 from werkzeug.utils import secure_filename
 from cryptography.fernet import Fernet, InvalidToken
+from flask_jwt_extended import (
+    JWTManager,
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+    get_jwt,
+    get_jwt_identity,
+    jwt_required,
+)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY')
 if not app.secret_key:
     raise RuntimeError('Falta la variable de entorno FLASK_SECRET_KEY')
+
+JWT_ACCESS_MINUTES = int(os.environ.get('JWT_ACCESS_MINUTES', '20'))
+JWT_REFRESH_DAYS = int(os.environ.get('JWT_REFRESH_DAYS', '14'))
+app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY')
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(minutes=JWT_ACCESS_MINUTES)
+app.config['JWT_REFRESH_TOKEN_EXPIRES'] = timedelta(days=JWT_REFRESH_DAYS)
+jwt = JWTManager(app)
 
 # Configuración de correo
 app.config['MAIL_SERVER'] = os.environ.get('MAIL_SERVER', 'smtp.gmail.com')
@@ -314,6 +333,234 @@ def get_user_type(cursor, user_id, email=None):
 
     cursor.execute("SELECT id FROM Prestadores WHERE UsuarioId = ?", (user_id,))
     return 'prestador' if cursor.fetchone() is not None else 'cliente'
+
+
+def ensure_jwt_configured():
+    if not app.config.get('JWT_SECRET_KEY'):
+        raise RuntimeError('Falta la variable de entorno JWT_SECRET_KEY')
+
+
+def utc_now():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def bearer_token_from_request():
+    auth_header = request.headers.get('Authorization', '')
+    if not auth_header.lower().startswith('bearer '):
+        return ''
+    return auth_header.split(' ', 1)[1].strip()
+
+
+def hash_token(token):
+    return hashlib.sha256(token.encode('utf-8')).hexdigest()
+
+
+def ensure_mobile_refresh_schema(cursor):
+    cursor.execute("""
+        IF OBJECT_ID('dbo.MobileRefreshTokens', 'U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.MobileRefreshTokens (
+                id INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_MobileRefreshTokens PRIMARY KEY,
+                UsuarioId INT NOT NULL,
+                Jti NVARCHAR(64) NOT NULL,
+                TokenHash CHAR(64) NOT NULL,
+                CreadoEn DATETIME2 NOT NULL CONSTRAINT DF_MobileRefreshTokens_CreadoEn DEFAULT SYSUTCDATETIME(),
+                ExpiraEn DATETIME2 NOT NULL,
+                RevocadoEn DATETIME2 NULL,
+                ReemplazadoPorJti NVARCHAR(64) NULL,
+                Dispositivo NVARCHAR(255) NULL,
+                UltimoUsoEn DATETIME2 NULL,
+                CONSTRAINT FK_MobileRefreshTokens_Usuarios FOREIGN KEY (UsuarioId) REFERENCES dbo.Usuarios(id)
+            );
+        END
+    """)
+    cursor.execute("""
+        IF NOT EXISTS (
+            SELECT 1 FROM sys.indexes
+            WHERE name = 'UX_MobileRefreshTokens_Jti'
+              AND object_id = OBJECT_ID('dbo.MobileRefreshTokens')
+        )
+        BEGIN
+            CREATE UNIQUE INDEX UX_MobileRefreshTokens_Jti ON dbo.MobileRefreshTokens (Jti);
+        END
+    """)
+    cursor.execute("""
+        IF NOT EXISTS (
+            SELECT 1 FROM sys.indexes
+            WHERE name = 'UX_MobileRefreshTokens_TokenHash'
+              AND object_id = OBJECT_ID('dbo.MobileRefreshTokens')
+        )
+        BEGIN
+            CREATE UNIQUE INDEX UX_MobileRefreshTokens_TokenHash ON dbo.MobileRefreshTokens (TokenHash);
+        END
+    """)
+    cursor.execute("""
+        IF NOT EXISTS (
+            SELECT 1 FROM sys.indexes
+            WHERE name = 'IX_MobileRefreshTokens_UsuarioId_RevocadoEn'
+              AND object_id = OBJECT_ID('dbo.MobileRefreshTokens')
+        )
+        BEGIN
+            CREATE INDEX IX_MobileRefreshTokens_UsuarioId_RevocadoEn
+                ON dbo.MobileRefreshTokens (UsuarioId, RevocadoEn, ExpiraEn);
+        END
+    """)
+
+
+def mobile_user_response(user):
+    return {
+        'id': user['id'],
+        'nombre': user.get('nombre') or 'Usuario',
+        'apellido': user.get('apellido_paterno') or '',
+        'email': user['email'],
+        'tipo_usuario': user['tipo_usuario'],
+        'estado_cuenta': 'activa' if user['activo'] else 'inactiva',
+        'foto_perfil': user.get('foto_perfil'),
+    }
+
+
+def fetch_mobile_user(cursor, user_id):
+    cursor.execute("""
+        SELECT u.id, u.Email, u.Activo, p.Nombre, p.ApellidoP, p.ApellidoM, p.FotoPerfil
+        FROM Usuarios u
+        LEFT JOIN Personas p ON u.id = p.UsuarioId
+        WHERE u.id = ?
+    """, (user_id,))
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    return {
+        'id': row[0],
+        'email': row[1],
+        'activo': bool(row[2]),
+        'nombre': row[3],
+        'apellido_paterno': row[4],
+        'apellido_materno': row[5],
+        'foto_perfil': row[6],
+        'tipo_usuario': get_user_type(cursor, row[0], row[1]),
+    }
+
+
+def issue_mobile_tokens(cursor, user, device_name=None):
+    ensure_jwt_configured()
+    identity = str(user['id'])
+    claims = {'rol': user['tipo_usuario']}
+    access_token = create_access_token(identity=identity, additional_claims=claims)
+    refresh_token = create_refresh_token(identity=identity, additional_claims=claims)
+    refresh_payload = decode_token(refresh_token)
+    refresh_jti = refresh_payload['jti']
+    refresh_exp = datetime.fromtimestamp(refresh_payload['exp'], tz=timezone.utc).replace(tzinfo=None)
+
+    ensure_mobile_refresh_schema(cursor)
+    cursor.execute("""
+        INSERT INTO MobileRefreshTokens (UsuarioId, Jti, TokenHash, ExpiraEn, Dispositivo, UltimoUsoEn)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (user['id'], refresh_jti, hash_token(refresh_token), refresh_exp, device_name, utc_now()))
+
+    return access_token, refresh_token
+
+
+def validate_refresh_token_record(cursor, user_id, jti, token):
+    ensure_mobile_refresh_schema(cursor)
+    cursor.execute("""
+        SELECT id, TokenHash, RevocadoEn, ExpiraEn
+        FROM MobileRefreshTokens
+        WHERE UsuarioId = ? AND Jti = ?
+    """, (user_id, jti))
+    row = cursor.fetchone()
+    if not row:
+        return None, 'desconocido'
+
+    token_hash = hash_token(token)
+    if not hmac.compare_digest(row[1], token_hash):
+        return row, 'desconocido'
+    if row[2] is not None:
+        return row, 'revocado'
+    if row[3] <= utc_now():
+        return row, 'expirado'
+
+    return row, None
+
+
+def revoke_refresh_token(cursor, token_id, replacement_jti=None):
+    cursor.execute("""
+        UPDATE MobileRefreshTokens
+        SET RevocadoEn = COALESCE(RevocadoEn, ?),
+            ReemplazadoPorJti = COALESCE(ReemplazadoPorJti, ?),
+            UltimoUsoEn = ?
+        WHERE id = ?
+    """, (utc_now(), replacement_jti, utc_now(), token_id))
+
+
+def revoke_user_refresh_tokens(cursor, user_id):
+    cursor.execute("""
+        UPDATE MobileRefreshTokens
+        SET RevocadoEn = COALESCE(RevocadoEn, ?),
+            UltimoUsoEn = ?
+        WHERE UsuarioId = ? AND RevocadoEn IS NULL
+    """, (utc_now(), utc_now(), user_id))
+
+
+def load_mobile_jwt_user():
+    identity = get_jwt_identity()
+    claims = get_jwt()
+    try:
+        user_id = int(identity)
+    except (TypeError, ValueError):
+        return None, jsonify({'success': False, 'message': 'Token inválido'}), 401
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        user = fetch_mobile_user(cursor, user_id)
+        if not user:
+            return None, jsonify({'success': False, 'message': 'Usuario no encontrado'}), 401
+        if not user['activo']:
+            return None, jsonify({'success': False, 'message': 'Cuenta inactiva'}), 403
+        if claims.get('rol') and claims.get('rol') != user['tipo_usuario']:
+            return None, jsonify({'success': False, 'message': 'El rol de la sesión ya no es válido'}), 403
+        return user, None, None
+    finally:
+        if conn:
+            conn.close()
+
+
+def mobile_role_required(*roles):
+    def decorator(view):
+        @wraps(view)
+        @jwt_required()
+        def wrapped(*args, **kwargs):
+            user, response, status = load_mobile_jwt_user()
+            if response is not None:
+                return response, status
+            if roles and user['tipo_usuario'] not in roles:
+                return jsonify({'success': False, 'message': 'No tienes permiso para realizar esta acción.'}), 403
+            g.mobile_user = user
+            return view(*args, **kwargs)
+        return wrapped
+    return decorator
+
+
+@jwt.expired_token_loader
+def jwt_expired_callback(jwt_header, jwt_payload):
+    return jsonify({'success': False, 'message': 'Token expirado'}), 401
+
+
+@jwt.invalid_token_loader
+def jwt_invalid_callback(reason):
+    return jsonify({'success': False, 'message': 'Token inválido'}), 401
+
+
+@jwt.unauthorized_loader
+def jwt_missing_callback(reason):
+    return jsonify({'success': False, 'message': 'Token requerido'}), 401
+
+
+@jwt.revoked_token_loader
+def jwt_revoked_callback(jwt_header, jwt_payload):
+    return jsonify({'success': False, 'message': 'Token revocado'}), 401
 
 
 def require_admin_session():
@@ -1077,6 +1324,209 @@ def get_user_data():
         if conn:
             conn.close()
 
+
+@app.route('/api/mobile/auth/login', methods=['POST'])
+def mobile_auth_login():
+    data = request.get_json(silent=True) or request.form
+    correo = (data.get('email') or '').strip().lower()
+    contrasena_ingresada = (data.get('password') or '').strip()
+    device_name = (request.headers.get('X-Device-Name') or data.get('device_name') or '').strip()[:255] or None
+
+    if not correo or not contrasena_ingresada:
+        return jsonify({'success': False, 'message': 'Correo y contraseña son obligatorios'}), 400
+    try:
+        validate_email(correo, check_deliverability=False)
+    except EmailNotValidError:
+        return jsonify({'success': False, 'message': 'Correo inválido'}), 400
+
+    conn = None
+    try:
+        ensure_jwt_configured()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_mobile_refresh_schema(cursor)
+        cursor.execute("""
+            SELECT u.id, u.PasswordHash, u.Activo, u.Email, p.Nombre, p.ApellidoP, p.ApellidoM, p.FotoPerfil
+            FROM Usuarios u
+            LEFT JOIN Personas p ON u.id = p.UsuarioId
+            WHERE LOWER(u.Email) = ?
+        """, (correo,))
+        resultado = cursor.fetchone()
+
+        if not resultado or not verificar_password(resultado[1], contrasena_ingresada):
+            return jsonify({'success': False, 'message': 'Credenciales incorrectas'}), 401
+        if not resultado[2]:
+            return jsonify({'success': False, 'message': 'Cuenta inactiva'}), 403
+
+        user = {
+            'id': resultado[0],
+            'email': resultado[3],
+            'activo': bool(resultado[2]),
+            'nombre': resultado[4],
+            'apellido_paterno': resultado[5],
+            'apellido_materno': resultado[6],
+            'foto_perfil': resultado[7],
+            'tipo_usuario': get_user_type(cursor, resultado[0], resultado[3]),
+        }
+
+        if user['tipo_usuario'] == 'administrador':
+            return jsonify({
+                'success': False,
+                'message': 'La administración debe realizarse desde JobNest V2 web.'
+            }), 403
+
+        if password_necesita_rehash(resultado[1]):
+            cursor.execute(
+                "UPDATE Usuarios SET PasswordHash = ?, UltimoLogin = ? WHERE id = ?",
+                (hash_password(contrasena_ingresada), datetime.now(), user['id'])
+            )
+        else:
+            cursor.execute("UPDATE Usuarios SET UltimoLogin = ? WHERE id = ?", (datetime.now(), user['id']))
+
+        access_token, refresh_token = issue_mobile_tokens(cursor, user, device_name)
+        conn.commit()
+
+        return jsonify({
+            'success': True,
+            'token_type': 'Bearer',
+            'access_token': access_token,
+            'refresh_token': refresh_token,
+            'access_expires_in': JWT_ACCESS_MINUTES * 60,
+            'refresh_expires_in': JWT_REFRESH_DAYS * 24 * 60 * 60,
+            'user': mobile_user_response(user),
+            'role': user['tipo_usuario'],
+        }), 200
+
+    except RuntimeError as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+    except pyodbc.Error as ex:
+        sqlstate = ex.args[0]
+        print(f"Error de base de datos en login móvil (sqlstate: {sqlstate}): {ex}")
+        return jsonify({'success': False, 'message': 'No fue posible iniciar sesión.'}), 500
+    except Exception as e:
+        print(f"Error inesperado en login móvil: {e}")
+        return jsonify({'success': False, 'message': 'No fue posible iniciar sesión.'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/mobile/auth/me', methods=['GET'])
+@jwt_required()
+def mobile_auth_me():
+    user, response, status = load_mobile_jwt_user()
+    if response is not None:
+        return response, status
+    if user['tipo_usuario'] == 'administrador':
+        return jsonify({'success': False, 'message': 'La administración debe realizarse desde JobNest V2 web.'}), 403
+    return jsonify({'success': True, 'user': mobile_user_response(user), 'role': user['tipo_usuario']}), 200
+
+
+@app.route('/api/mobile/auth/refresh', methods=['POST'])
+@jwt_required(refresh=True)
+def mobile_auth_refresh():
+    refresh_token = bearer_token_from_request()
+    claims = get_jwt()
+    try:
+        user_id = int(get_jwt_identity())
+    except (TypeError, ValueError):
+        return jsonify({'success': False, 'message': 'Token inválido'}), 401
+
+    conn = None
+    try:
+        ensure_jwt_configured()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        user = fetch_mobile_user(cursor, user_id)
+        if not user:
+            return jsonify({'success': False, 'message': 'Usuario no encontrado'}), 401
+        if not user['activo']:
+            revoke_user_refresh_tokens(cursor, user_id)
+            conn.commit()
+            return jsonify({'success': False, 'message': 'Cuenta inactiva'}), 403
+        if user['tipo_usuario'] == 'administrador':
+            revoke_user_refresh_tokens(cursor, user_id)
+            conn.commit()
+            return jsonify({'success': False, 'message': 'La administración debe realizarse desde JobNest V2 web.'}), 403
+
+        record, error = validate_refresh_token_record(cursor, user_id, claims['jti'], refresh_token)
+        if error:
+            if error in {'desconocido', 'revocado'}:
+                revoke_user_refresh_tokens(cursor, user_id)
+                conn.commit()
+            return jsonify({'success': False, 'message': 'Sesión inválida'}), 401
+
+        access_token, new_refresh_token = issue_mobile_tokens(cursor, user, request.headers.get('X-Device-Name'))
+        new_refresh_jti = decode_token(new_refresh_token)['jti']
+        revoke_refresh_token(cursor, record[0], new_refresh_jti)
+        conn.commit()
+
+        return jsonify({
+            'success': True,
+            'token_type': 'Bearer',
+            'access_token': access_token,
+            'refresh_token': new_refresh_token,
+            'access_expires_in': JWT_ACCESS_MINUTES * 60,
+            'refresh_expires_in': JWT_REFRESH_DAYS * 24 * 60 * 60,
+            'user': mobile_user_response(user),
+            'role': user['tipo_usuario'],
+        }), 200
+
+    except RuntimeError as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+    except pyodbc.Error as ex:
+        sqlstate = ex.args[0]
+        print(f"Error de base de datos al renovar token móvil (sqlstate: {sqlstate}): {ex}")
+        return jsonify({'success': False, 'message': 'No fue posible renovar la sesión.'}), 500
+    except Exception as e:
+        print(f"Error inesperado al renovar token móvil: {e}")
+        return jsonify({'success': False, 'message': 'No fue posible renovar la sesión.'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/mobile/auth/logout', methods=['POST'])
+@jwt_required(optional=True)
+def mobile_auth_logout():
+    data = request.get_json(silent=True) or {}
+    refresh_token = (data.get('refresh_token') or '').strip()
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_mobile_refresh_schema(cursor)
+
+        if refresh_token:
+            try:
+                payload = decode_token(refresh_token, allow_expired=True)
+                user_id = int(payload['sub'])
+                cursor.execute("""
+                    UPDATE MobileRefreshTokens
+                    SET RevocadoEn = COALESCE(RevocadoEn, ?),
+                        UltimoUsoEn = ?
+                    WHERE UsuarioId = ? AND Jti = ? AND TokenHash = ?
+                """, (utc_now(), utc_now(), user_id, payload['jti'], hash_token(refresh_token)))
+            except Exception:
+                pass
+        else:
+            identity = get_jwt_identity()
+            if identity:
+                try:
+                    revoke_user_refresh_tokens(cursor, int(identity))
+                except (TypeError, ValueError):
+                    pass
+
+        conn.commit()
+        return jsonify({'success': True, 'message': 'Sesión móvil cerrada'}), 200
+    except pyodbc.Error as ex:
+        sqlstate = ex.args[0]
+        print(f"Error de base de datos al cerrar sesión móvil (sqlstate: {sqlstate}): {ex}")
+        return jsonify({'success': False, 'message': 'No fue posible revocar la sesión en el servidor.'}), 500
+    finally:
+        if conn:
+            conn.close()
+
 @app.route('/subir_foto_perfil', methods=['POST'])
 def subir_foto_perfil():
     if 'usuario_autenticado' not in session or not session['usuario_autenticado']:
@@ -1477,6 +1927,11 @@ def publicaciones_activas():
     finally:
         if conn:
             conn.close()
+
+
+@app.route('/api/mobile/publicaciones_activas', methods=['GET'])
+def mobile_publicaciones_activas():
+    return publicaciones_activas()
 
 @app.route('/toggle_publicacion/<int:publicacion_id>', methods=['POST'])
 def toggle_publicacion(publicacion_id):
@@ -2056,6 +2511,214 @@ def mis_solicitudes_cliente():
     except Exception as e:
         print(f"Error inesperado al obtener solicitudes: {e}")
         return jsonify({'success': False, 'message': f"Error inesperado: {e}"}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/mobile/enviar_solicitud', methods=['POST'])
+@mobile_role_required('cliente')
+def mobile_enviar_solicitud():
+    user_id = g.mobile_user['id']
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        publicacion_id = request.form.get('publicacion_id', '').strip()
+        fecha_servicio = request.form.get('fecha_servicio', '').strip()
+        hora_servicio = request.form.get('hora_servicio', '').strip()
+        mensaje = request.form.get('mensaje', '').strip()
+
+        if not publicacion_id:
+            return jsonify({'success': False, 'message': 'ID de publicación es obligatorio.'}), 400
+        if not fecha_servicio:
+            return jsonify({'success': False, 'message': 'La fecha del servicio es obligatoria.'}), 400
+
+        cursor.execute("SELECT UsuarioId FROM Publicaciones WHERE id = ? AND Activa = 1 AND EstadoRevision = 'aprobada'", (publicacion_id,))
+        publicacion = cursor.fetchone()
+        if not publicacion:
+            return jsonify({'success': False, 'message': 'Publicación no encontrada o no activa.'}), 404
+        prestador_id = publicacion[0]
+
+        cursor.execute("""
+            INSERT INTO SolicitudesServicios (PublicacionId, ClienteId, PrestadorId, FechaServicio, HoraServicio, MensajeCliente, Estado)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (publicacion_id, user_id, prestador_id, fecha_servicio, hora_servicio, cifrar_dato(mensaje) if mensaje else None, 'pendiente'))
+        conn.commit()
+
+        return jsonify({'success': True, 'message': 'Solicitud enviada exitosamente.'}), 200
+
+    except pyodbc.Error as ex:
+        sqlstate = ex.args[0]
+        print(f"Error de base de datos al enviar solicitud móvil (sqlstate: {sqlstate}): {ex}")
+        return jsonify({'success': False, 'message': 'Ocurrió un error en la base de datos.'}), 500
+    except Exception as e:
+        print(f"Error inesperado al enviar solicitud móvil: {e}")
+        return jsonify({'success': False, 'message': 'Ocurrió un error inesperado.'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/mobile/mis_solicitudes_prestador', methods=['GET'])
+@mobile_role_required('prestador')
+def mobile_mis_solicitudes_prestador():
+    user_id = g.mobile_user['id']
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT s.id, s.FechaSolicitud, s.FechaServicio, s.HoraServicio, s.MensajeCliente, s.Estado,
+                   p.Titulo, p.Precio, p.Categoria,
+                   per.Nombre, per.ApellidoP, per.ApellidoM, per.Telefono, per.FotoPerfil,
+                   u.Email
+            FROM SolicitudesServicios s
+            INNER JOIN Publicaciones p ON s.PublicacionId = p.id
+            INNER JOIN Usuarios u ON s.ClienteId = u.id
+            INNER JOIN Personas per ON u.id = per.UsuarioId
+            WHERE s.PrestadorId = ?
+            ORDER BY s.FechaSolicitud DESC
+        """, (user_id,))
+        solicitudes = cursor.fetchall()
+        solicitudes_list = []
+        for sol in solicitudes:
+            solicitudes_list.append({
+                'id': sol[0],
+                'fecha_solicitud': sol[1].strftime('%d/%m/%Y %H:%M') if sol[1] else '',
+                'fecha_servicio': sol[2].strftime('%d/%m/%Y') if sol[2] else '',
+                'hora_servicio': sol[3].strftime('%H:%M') if sol[3] else '',
+                'mensaje_cliente': descifrar_dato(sol[4]),
+                'estado': sol[5],
+                'titulo_publicacion': sol[6],
+                'precio': float(sol[7]) if sol[7] else None,
+                'categoria': sol[8],
+                'cliente_nombre': f"{sol[9]} {sol[10]} {sol[11]}",
+                'cliente_telefono': descifrar_dato(sol[12]),
+                'cliente_foto': sol[13],
+                'cliente_email': sol[14]
+            })
+        return jsonify({'success': True, 'solicitudes': solicitudes_list}), 200
+
+    except pyodbc.Error as ex:
+        sqlstate = ex.args[0]
+        print(f"Error de base de datos al obtener solicitudes móviles prestador (sqlstate: {sqlstate}): {ex}")
+        return jsonify({'success': False, 'message': 'Error de base de datos.'}), 500
+    except Exception as e:
+        print(f"Error inesperado al obtener solicitudes móviles prestador: {e}")
+        return jsonify({'success': False, 'message': 'Error inesperado.'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/mobile/mis_solicitudes_cliente', methods=['GET'])
+@mobile_role_required('cliente')
+def mobile_mis_solicitudes_cliente():
+    user_id = g.mobile_user['id']
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT s.id, s.FechaSolicitud, s.FechaServicio, s.HoraServicio, s.MensajeCliente, s.Estado,
+                   p.Titulo, p.Precio, p.Categoria,
+                   per.Nombre, per.ApellidoP, per.ApellidoM, per.Telefono, per.FotoPerfil,
+                   u.Email
+            FROM SolicitudesServicios s
+            INNER JOIN Publicaciones p ON s.PublicacionId = p.id
+            INNER JOIN Usuarios u ON s.PrestadorId = u.id
+            INNER JOIN Personas per ON u.id = per.UsuarioId
+            WHERE s.ClienteId = ?
+            ORDER BY s.FechaSolicitud DESC
+        """, (user_id,))
+        solicitudes = cursor.fetchall()
+        solicitudes_list = []
+        for sol in solicitudes:
+            solicitudes_list.append({
+                'id': sol[0],
+                'fecha_solicitud': sol[1].strftime('%d/%m/%Y %H:%M') if sol[1] else '',
+                'fecha_servicio': sol[2].strftime('%d/%m/%Y') if sol[2] else '',
+                'hora_servicio': sol[3].strftime('%H:%M') if sol[3] else '',
+                'mensaje_cliente': descifrar_dato(sol[4]),
+                'estado': sol[5],
+                'titulo_publicacion': sol[6],
+                'precio': float(sol[7]) if sol[7] else None,
+                'categoria': sol[8],
+                'prestador_nombre': f"{sol[9]} {sol[10]} {sol[11]}",
+                'prestador_telefono': descifrar_dato(sol[12]),
+                'prestador_foto': sol[13],
+                'prestador_email': sol[14]
+            })
+        return jsonify({'success': True, 'solicitudes': solicitudes_list}), 200
+
+    except pyodbc.Error as ex:
+        sqlstate = ex.args[0]
+        print(f"Error de base de datos al obtener solicitudes móviles cliente (sqlstate: {sqlstate}): {ex}")
+        return jsonify({'success': False, 'message': 'Error de base de datos.'}), 500
+    except Exception as e:
+        print(f"Error inesperado al obtener solicitudes móviles cliente: {e}")
+        return jsonify({'success': False, 'message': 'Error inesperado.'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/mobile/crear_publicacion', methods=['POST'])
+@mobile_role_required('prestador')
+def mobile_crear_publicacion():
+    user_id = g.mobile_user['id']
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_control_schema(cursor)
+        datos = leer_datos_publicacion_form()
+        imagenes = request.files.getlist('imagenes')
+
+        cursor.execute("""
+            INSERT INTO Publicaciones (UsuarioId, Titulo, Descripcion, Categoria, Precio, Ubicacion,
+                                       Experiencia, Habilidades, Disponibilidad, IncluyeMateriales, TipoPrecio,
+                                       Activa, EstadoRevision, ComentarioRevision)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pendiente_revision', NULL)
+        """, (
+            user_id, datos['titulo'], datos['descripcion'], datos['categoria'], datos['precio'],
+            datos['ubicacion'], datos['experiencia'], datos['habilidades'], datos['disponibilidad'],
+            datos['incluye_materiales'], datos['tipo_precio']
+        ))
+        cursor.execute("SELECT SCOPE_IDENTITY()")
+        nueva_publicacion_id = int(cursor.fetchone()[0])
+        version_id = crear_version_publicacion(cursor, nueva_publicacion_id, user_id, datos)
+        guardar_imagenes_version(cursor, nueva_publicacion_id, version_id, user_id, imagenes)
+        audit_event(cursor, 'publicacion_enviada_revision', 'Publicaciones', nueva_publicacion_id,
+                    f"Publicación móvil creada por prestador y enviada a revisión: {datos['titulo']}",
+                    usuario_id=user_id, actor_id=user_id)
+        crear_alerta(cursor, 'publicacion_revision', 'Nueva publicación pendiente',
+                     f"{datos['titulo']} fue enviada a revisión administrativa.",
+                     publicacion_id=nueva_publicacion_id, version_id=version_id, rol_destino='administrador')
+        conn.commit()
+        return jsonify({'success': True, 'message': 'Publicación enviada a revisión del administrador. Aparecerá en marketplace cuando sea aprobada.'}), 200
+
+    except ValueError as e:
+        if conn:
+            conn.rollback()
+        return jsonify({'success': False, 'message': str(e)}), 400
+    except pyodbc.Error as ex:
+        if conn:
+            conn.rollback()
+        sqlstate = ex.args[0]
+        print(f"Error de base de datos al crear publicación móvil (sqlstate: {sqlstate}): {ex}")
+        return jsonify({'success': False, 'message': 'Ocurrió un error en la base de datos.'}), 500
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Error inesperado al crear publicación móvil: {e}")
+        return jsonify({'success': False, 'message': 'Ocurrió un error inesperado.'}), 500
     finally:
         if conn:
             conn.close()

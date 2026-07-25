@@ -2,7 +2,7 @@ import type { Publication } from './domain';
 
 export type PublicStackParamList = {
   Home: undefined;
-  Login: { email?: string; password?: string } | undefined;
+  Login: { email?: string } | undefined;
   Register: undefined;
   Explore: undefined;
   Detail: { publication: Publication };

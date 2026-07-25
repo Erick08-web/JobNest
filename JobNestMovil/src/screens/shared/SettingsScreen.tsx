@@ -5,7 +5,7 @@ import { DEFAULT_API_URL, useAuth } from '../../context/AuthContext';
 import { styles } from '../../styles/theme';
 
 export function SettingsScreen() {
-  const { apiUrl, setApiUrl, sessionCookie } = useAuth();
+  const { apiUrl, setApiUrl, tokens } = useAuth();
 
   return (
     <AuthCard title="Conexion con API" subtitle="En Expo Go usa la IP local de tu Mac, no localhost.">
@@ -17,7 +17,7 @@ export function SettingsScreen() {
       </View>
       <View style={styles.tipBoxMuted}>
         <Text style={styles.tipTitle}>Sesion</Text>
-        <Text style={styles.tipText}>{sessionCookie ? 'Cookie de sesion capturada.' : 'Aun no hay sesion iniciada.'}</Text>
+        <Text style={styles.tipText}>{tokens ? 'Tokens JWT guardados en SecureStore.' : 'Aun no hay sesion iniciada.'}</Text>
       </View>
     </AuthCard>
   );

@@ -4,7 +4,9 @@ import type { ApiOptions } from './api';
 type ApiFetch = <T>(path: string, options?: ApiOptions) => Promise<T>;
 
 export async function fetchPublications(apiFetch: ApiFetch) {
-  const data = await apiFetch<Publication[] | { publicaciones?: Publication[]; data?: Publication[] }>('/publicaciones_activas');
+  const data = await apiFetch<Publication[] | { publicaciones?: Publication[]; data?: Publication[] }>('/api/mobile/publicaciones_activas', {
+    auth: false,
+  });
   return Array.isArray(data) ? data : data?.publicaciones ?? data?.data ?? [];
 }
 
@@ -29,5 +31,5 @@ export async function createPublication(
   form.append('habilidades', payload.postSkills);
   form.append('disponibilidad', 'Disponible esta semana');
   form.append('tipo_precio', 'hora');
-  await apiFetch('/crear_publicacion', { method: 'POST', body: form });
+  await apiFetch('/api/mobile/crear_publicacion', { method: 'POST', body: form });
 }

@@ -2,7 +2,9 @@ import React, { createContext, useContext, useMemo, useState } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack';
+import { View } from 'react-native';
 import { ScreenFrame } from '../components/ScreenFrame';
+import { LoadingPill } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
 import { mockProfessionals } from '../constants/mockProfessionals';
 import { LoginScreen } from '../screens/auth/LoginScreen';
@@ -39,8 +41,16 @@ type MobileDataValue = ReturnType<typeof useCreateMobileData>;
 const MobileDataContext = createContext<MobileDataValue | null>(null);
 
 export function AppNavigator() {
-  const { isLoggedIn } = useAuth();
+  const { isLoggedIn, isRestoring } = useAuth();
   const data = useCreateMobileData();
+
+  if (isRestoring) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', padding: 20 }}>
+        <LoadingPill />
+      </View>
+    );
+  }
 
   return (
     <MobileDataContext.Provider value={data}>
@@ -98,7 +108,6 @@ function LoginRoute({ navigation, route }: PublicProps<'Login'>) {
     <ScreenFrame onHome={() => navigation.navigate('Home')} onSettings={() => navigation.navigate('Settings')}>
       <LoginScreen
         initialEmail={route.params?.email}
-        initialPassword={route.params?.password}
         onRegister={() => navigation.navigate('Register')}
       />
     </ScreenFrame>
