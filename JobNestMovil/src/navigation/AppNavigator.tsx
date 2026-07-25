@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -6,7 +6,6 @@ import { View } from 'react-native';
 import { ScreenFrame } from '../components/ScreenFrame';
 import { LoadingPill } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
-import { mockProfessionals } from '../constants/mockProfessionals';
 import { LoginScreen } from '../screens/auth/LoginScreen';
 import { RegisterScreen } from '../screens/auth/RegisterScreen';
 import { ClientDashboardScreen } from '../screens/client/ClientDashboardScreen';
@@ -20,7 +19,8 @@ import { RequestsScreen } from '../screens/shared/RequestsScreen';
 import { SettingsScreen } from '../screens/shared/SettingsScreen';
 import { fetchPublications } from '../services/publicationService';
 import { fetchRequests } from '../services/requestService';
-import type { Publication, RequestItem } from '../types/domain';
+import { fetchCategories } from '../services/categoryService';
+import type { Category, Publication, RequestItem } from '../types/domain';
 import type {
   AuthenticatedStackParamList,
   ClientTabParamList,
@@ -85,7 +85,7 @@ function AuthenticatedNavigator() {
 }
 
 function PublicHomeRoute({ navigation }: PublicProps<'Home'>) {
-  const { publications, openPublication, loadPublications } = useMobileData();
+  const { apiUrl, categories, publications, openPublication, loadPublications } = useMobileData();
 
   return (
     <ScreenFrame onHome={() => navigation.navigate('Home')} onSettings={() => navigation.navigate('Settings')}>
@@ -97,6 +97,8 @@ function PublicHomeRoute({ navigation }: PublicProps<'Home'>) {
           void loadPublications();
         }}
         publications={publications.map(normalizePublication).slice(0, 3)}
+        categories={categories}
+        apiUrl={apiUrl}
         onOpenPublication={(publication) => openPublication(publication, (item) => navigation.navigate('Detail', { publication: item }))}
       />
     </ScreenFrame>
@@ -123,7 +125,17 @@ function RegisterRoute({ navigation }: PublicProps<'Register'>) {
 }
 
 function PublicExploreRoute({ navigation }: PublicProps<'Explore'>) {
-  const { search, setSearch, filteredPublications, loadPublications, openPublication } = useMobileData();
+  const {
+    apiUrl,
+    categories,
+    search,
+    setSearch,
+    filteredPublications,
+    loadPublications,
+    openPublication,
+    publicationsLoading,
+    publicationsError,
+  } = useMobileData();
 
   return (
     <ScreenFrame onHome={() => navigation.navigate('Home')} onSettings={() => navigation.navigate('Settings')}>
@@ -131,6 +143,10 @@ function PublicExploreRoute({ navigation }: PublicProps<'Explore'>) {
         search={search}
         onSearch={setSearch}
         publications={filteredPublications}
+        categories={categories}
+        apiUrl={apiUrl}
+        loading={publicationsLoading}
+        error={publicationsError}
         onRefresh={loadPublications}
         onOpenPublication={(publication) => openPublication(publication, (item) => navigation.navigate('Detail', { publication: item }))}
       />
@@ -267,6 +283,7 @@ function ProviderTabsNavigator({
         {() => (
           <ScreenFrame onHome={() => rootNavigation.navigate('MainTabs')} onSettings={() => rootNavigation.navigate('Settings')}>
             <CreatePublicationScreen
+              categories={data.categories}
               onPublished={() => {
                 void data.loadPublications();
                 rootNavigation.navigate('MainTabs');
@@ -295,6 +312,10 @@ function ExploreTabContent({
         search={data.search}
         onSearch={data.setSearch}
         publications={data.filteredPublications}
+        categories={data.categories}
+        apiUrl={data.apiUrl}
+        loading={data.publicationsLoading}
+        error={data.publicationsError}
         onRefresh={data.loadPublications}
         onOpenPublication={(publication) => data.openPublication(publication, (item) => rootNavigation.navigate('Detail', { publication: item }))}
       />
@@ -313,7 +334,13 @@ function RequestsTabContent({
 
   return (
     <ScreenFrame onHome={() => rootNavigation.navigate('MainTabs')} onSettings={() => rootNavigation.navigate('Settings')}>
-      <RequestsScreen requests={data.requests} onRefresh={data.loadRequests} role={currentUserType} />
+      <RequestsScreen
+        requests={data.requests}
+        onRefresh={data.loadRequests}
+        role={currentUserType}
+        loading={data.requestsLoading}
+        error={data.requestsError}
+      />
     </ScreenFrame>
   );
 }
@@ -337,10 +364,22 @@ function useMobileData() {
 }
 
 function useCreateMobileData() {
-  const { apiFetch, currentUserType, setApiMessage, setLoading } = useAuth();
-  const [publications, setPublications] = useState<Publication[]>(mockProfessionals);
+  const { apiFetch, apiUrl, currentUserType, setApiMessage } = useAuth();
+  const [publications, setPublications] = useState<Publication[]>([]);
   const [requests, setRequests] = useState<RequestItem[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [search, setSearch] = useState('');
+  const [publicationsLoading, setPublicationsLoading] = useState(false);
+  const [requestsLoading, setRequestsLoading] = useState(false);
+  const [categoriesLoading, setCategoriesLoading] = useState(false);
+  const [publicationsError, setPublicationsError] = useState('');
+  const [requestsError, setRequestsError] = useState('');
+  const [categoriesError, setCategoriesError] = useState('');
+
+  useEffect(() => {
+    void loadPublications();
+    void loadCategories();
+  }, []);
 
   const filteredPublications = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -354,30 +393,46 @@ function useCreateMobileData() {
   }, [publications, search]);
 
   const loadPublications = async () => {
-    setLoading(true);
+    setPublicationsLoading(true);
+    setPublicationsError('');
     setApiMessage('');
     try {
       const list = await fetchPublications(apiFetch);
-      if (list.length) setPublications(list);
-      setApiMessage('Servicios actualizados desde JobNest.');
+      setPublications(list);
     } catch (error) {
-      setApiMessage(error instanceof Error ? error.message : 'No se pudo consultar la API.');
+      setPublications([]);
+      setPublicationsError(error instanceof Error ? error.message : 'No fue posible conectar con JobNest.');
     } finally {
-      setLoading(false);
+      setPublicationsLoading(false);
+    }
+  };
+
+  const loadCategories = async () => {
+    setCategoriesLoading(true);
+    setCategoriesError('');
+    try {
+      const list = await fetchCategories(apiFetch);
+      setCategories(list);
+    } catch (error) {
+      setCategories([]);
+      setCategoriesError(error instanceof Error ? error.message : 'No fue posible cargar las categorías.');
+    } finally {
+      setCategoriesLoading(false);
     }
   };
 
   const loadRequests = async () => {
-    setLoading(true);
+    setRequestsLoading(true);
+    setRequestsError('');
     setApiMessage('');
     try {
       const list = await fetchRequests(apiFetch, currentUserType);
       setRequests(list);
-      setApiMessage('Solicitudes actualizadas.');
     } catch (error) {
-      setApiMessage(error instanceof Error ? error.message : 'No se pudieron cargar las solicitudes.');
+      setRequests([]);
+      setRequestsError(error instanceof Error ? error.message : 'No se pudieron cargar las solicitudes.');
     } finally {
-      setLoading(false);
+      setRequestsLoading(false);
     }
   };
 
@@ -388,11 +443,20 @@ function useCreateMobileData() {
   return {
     publications,
     requests,
+    categories,
     search,
+    apiUrl,
     setSearch,
     filteredPublications,
     loadPublications,
+    loadCategories,
     loadRequests,
+    publicationsLoading,
+    requestsLoading,
+    categoriesLoading,
+    publicationsError,
+    requestsError,
+    categoriesError,
     openPublication,
   };
 }

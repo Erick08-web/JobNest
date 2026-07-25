@@ -34,9 +34,9 @@ export function PrimaryButton({ title, onPress, disabled }: { title: string; onP
   );
 }
 
-export function GhostButton({ title, onPress }: { title: string; onPress: () => void }) {
+export function GhostButton({ title, onPress, disabled }: { title: string; onPress: () => void; disabled?: boolean }) {
   return (
-    <Pressable style={({ pressed }) => [styles.ghostButton, pressed && styles.pressed]} onPress={onPress}>
+    <Pressable style={({ pressed }) => [styles.ghostButton, pressed && styles.pressed, disabled && styles.disabled]} onPress={onPress} disabled={disabled}>
       <Text style={styles.ghostButtonText}>{title}</Text>
     </Pressable>
   );

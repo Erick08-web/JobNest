@@ -8,10 +8,10 @@ export function normalizePublication(item: Publication): Publication {
     descripcion: item.descripcion ?? item.Descripcion ?? 'Servicio disponible en JobNest.',
     categoria: item.categoria ?? item.Categoria ?? 'Servicio',
     ubicacion: item.ubicacion ?? item.Ubicacion ?? 'Ubicacion no especificada',
-    salario: item.salario ?? item.Salario ?? item.precio ?? 'A convenir',
-    disponibilidad: item.disponibilidad ?? item.Disponibilidad ?? 'Consultar disponibilidad',
-    nombre_prestador: item.nombre_prestador ?? item.NombrePrestador ?? 'Profesional JobNest',
-    promedio_calificacion: item.promedio_calificacion ?? item.calificacion ?? 'Nuevo',
+    salario: item.salario ?? item.Salario ?? item.precio,
+    disponibilidad: item.disponibilidad ?? item.Disponibilidad,
+    nombre_prestador: item.nombre_prestador ?? item.NombrePrestador ?? item.prestador_nombre,
+    promedio_calificacion: item.promedio_calificacion ?? item.calificacion,
   };
 }
 
@@ -32,7 +32,7 @@ export function getRequestStatus(item: RequestItem) {
 }
 
 export function money(value?: number | string) {
-  if (value === undefined || value === null || value === '') return 'A convenir';
+  if (value === undefined || value === null || value === '') return '';
   const number = Number(value);
   if (Number.isFinite(number)) return `$${number.toLocaleString('es-MX')}`;
   return String(value);
@@ -44,4 +44,12 @@ export function normalizeUserType(value?: string): UserType {
 
 export function userTypeForApi(value: UserType) {
   return value === 'Prestador' ? 'prestador' : 'cliente';
+}
+
+export function buildAbsoluteUrl(apiUrl: string, value?: string | null) {
+  if (!value) return '';
+  if (/^https?:\/\//i.test(value)) return value;
+  const normalizedBase = apiUrl.replace(/\/$/, '');
+  const normalizedPath = value.startsWith('/') ? value : `/${value}`;
+  return `${normalizedBase}${normalizedPath}`;
 }

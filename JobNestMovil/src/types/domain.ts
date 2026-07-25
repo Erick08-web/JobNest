@@ -24,14 +24,22 @@ export type Publication = {
   salario?: number | string;
   Salario?: number | string;
   precio?: number | string;
+  precio_texto?: string;
   nombre_prestador?: string;
   NombrePrestador?: string;
+  prestador_nombre?: string;
+  prestador_foto?: string | null;
+  imagen_principal?: string | null;
   calificacion?: number | string;
   promedio_calificacion?: number | string;
   disponibilidad?: string;
   Disponibilidad?: string;
   experiencia?: string;
   habilidades?: string;
+};
+
+export type Category = {
+  nombre: string;
 };
 
 export type RequestItem = {

@@ -244,9 +244,13 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  cardImageFill: {
+    width: '100%',
+    height: '100%',
+  },
   cardImageText: {
     color: PRIMARY,
-    fontSize: 46,
+    fontSize: 18,
     fontWeight: '900',
   },
   cardContent: {

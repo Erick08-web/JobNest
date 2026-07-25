@@ -1,10 +1,9 @@
 import React from 'react';
 import { Text, View } from 'react-native';
 import { ProfessionalCard, publicationKey } from '../../components/ProfessionalCard';
-import { GhostButton, PrimaryButton } from '../../components/ui';
-import { categories } from '../../constants/categories';
+import { EmptyState, GhostButton, PrimaryButton } from '../../components/ui';
 import { styles } from '../../styles/theme';
-import type { Publication } from '../../types/domain';
+import type { Category, Publication } from '../../types/domain';
 import { normalizePublication } from '../../utils/formatters';
 
 export function HomeScreen({
@@ -12,12 +11,16 @@ export function HomeScreen({
   onRegister,
   onExplore,
   publications,
+  categories,
+  apiUrl,
   onOpenPublication,
 }: {
   onLogin: () => void;
   onRegister: () => void;
   onExplore: () => void;
   publications: Publication[];
+  categories: Category[];
+  apiUrl: string;
   onOpenPublication: (publication: Publication) => void;
 }) {
   return (
@@ -39,22 +42,22 @@ export function HomeScreen({
         <Text style={styles.sectionSubtitle}>Busca por oficio, especialidad o necesidad.</Text>
       </View>
       <View style={styles.categoryGrid}>
-        {categories.map((category) => (
-          <View key={category} style={styles.categoryCard}>
-            <Text style={styles.categoryTitle}>{category}</Text>
-            <Text style={styles.categoryText}>Profesionales verificados</Text>
+        {categories.length ? categories.map((category) => (
+          <View key={category.nombre} style={styles.categoryCard}>
+            <Text style={styles.categoryTitle}>{category.nombre}</Text>
+            <Text style={styles.categoryText}>Disponible en JobNest</Text>
           </View>
-        ))}
+        )) : <EmptyState title="Sin categorias" text="No fue posible encontrar categorías disponibles." />}
       </View>
 
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>Profesionales destacados</Text>
         <Text style={styles.sectionSubtitle}>Primer vistazo al marketplace movil.</Text>
       </View>
-      {publications.map((publication) => {
+      {publications.length ? publications.map((publication) => {
         const item = normalizePublication(publication);
-        return <ProfessionalCard key={publicationKey(item)} publication={item} onPress={() => onOpenPublication(item)} />;
-      })}
+        return <ProfessionalCard key={publicationKey(item)} publication={item} apiUrl={apiUrl} onPress={() => onOpenPublication(item)} />;
+      }) : <EmptyState title="Sin servicios" text="No hay servicios disponibles por el momento." />}
 
       <View style={styles.ctaCard}>
         <Text style={styles.ctaTitle}>Tambien puedes publicar tu servicio.</Text>

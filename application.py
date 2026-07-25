@@ -1933,6 +1933,41 @@ def publicaciones_activas():
 def mobile_publicaciones_activas():
     return publicaciones_activas()
 
+
+@app.route('/api/mobile/categorias', methods=['GET'])
+def mobile_categorias():
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_control_schema(cursor)
+        cursor.execute("""
+            SELECT DISTINCT p.Categoria
+            FROM Publicaciones p
+            WHERE p.Categoria IS NOT NULL
+              AND LTRIM(RTRIM(p.Categoria)) <> ''
+              AND p.Activa = 1
+              AND EXISTS (
+                  SELECT 1 FROM PublicacionVersiones pv
+                  WHERE pv.PublicacionId = p.id
+                    AND pv.Estado = 'aprobada'
+                    AND pv.EsVersionPublica = 1
+              )
+            ORDER BY p.Categoria
+        """)
+        categorias = [row[0] for row in cursor.fetchall()]
+        return jsonify({'success': True, 'categorias': categorias}), 200
+    except pyodbc.Error as ex:
+        sqlstate = ex.args[0]
+        print(f"Error de base de datos al obtener categorías móviles (sqlstate: {sqlstate}): {ex}")
+        return jsonify({'success': False, 'message': 'No fue posible cargar las categorías.'}), 500
+    except Exception as e:
+        print(f"Error inesperado al obtener categorías móviles: {e}")
+        return jsonify({'success': False, 'message': 'No fue posible cargar las categorías.'}), 500
+    finally:
+        if conn:
+            conn.close()
+
 @app.route('/toggle_publicacion/<int:publicacion_id>', methods=['POST'])
 def toggle_publicacion(publicacion_id):
     if 'usuario_autenticado' not in session or not session['usuario_autenticado']:
@@ -2353,7 +2388,18 @@ def enviar_solicitud():
         if not fecha_servicio:
             return jsonify({'success': False, 'message': 'La fecha del servicio es obligatoria.'}), 400
 
-        cursor.execute("SELECT UsuarioId FROM Publicaciones WHERE id = ? AND Activa = 1 AND EstadoRevision = 'aprobada'", (publicacion_id,))
+        cursor.execute("""
+            SELECT UsuarioId
+            FROM Publicaciones p
+            WHERE p.id = ?
+              AND p.Activa = 1
+              AND EXISTS (
+                  SELECT 1 FROM PublicacionVersiones pv
+                  WHERE pv.PublicacionId = p.id
+                    AND pv.Estado = 'aprobada'
+                    AND pv.EsVersionPublica = 1
+              )
+        """, (publicacion_id,))
         publicacion = cursor.fetchone()
         if not publicacion:
             return jsonify({'success': False, 'message': 'Publicación no encontrada o no activa.'}), 404
@@ -2685,13 +2731,13 @@ def mobile_crear_publicacion():
             INSERT INTO Publicaciones (UsuarioId, Titulo, Descripcion, Categoria, Precio, Ubicacion,
                                        Experiencia, Habilidades, Disponibilidad, IncluyeMateriales, TipoPrecio,
                                        Activa, EstadoRevision, ComentarioRevision)
+            OUTPUT INSERTED.id
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pendiente_revision', NULL)
         """, (
             user_id, datos['titulo'], datos['descripcion'], datos['categoria'], datos['precio'],
             datos['ubicacion'], datos['experiencia'], datos['habilidades'], datos['disponibilidad'],
             datos['incluye_materiales'], datos['tipo_precio']
         ))
-        cursor.execute("SELECT SCOPE_IDENTITY()")
         nueva_publicacion_id = int(cursor.fetchone()[0])
         version_id = crear_version_publicacion(cursor, nueva_publicacion_id, user_id, datos)
         guardar_imagenes_version(cursor, nueva_publicacion_id, version_id, user_id, imagenes)

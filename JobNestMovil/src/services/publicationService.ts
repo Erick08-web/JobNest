@@ -19,6 +19,9 @@ export async function createPublication(
     postPrice: string;
     postLocation: string;
     postSkills: string;
+    postExperience: string;
+    postAvailability: string;
+    postPriceType: string;
   },
 ) {
   const form = new FormData();
@@ -27,9 +30,9 @@ export async function createPublication(
   form.append('categoria', payload.postCategory);
   form.append('salario', payload.postPrice);
   form.append('ubicacion', payload.postLocation);
-  form.append('experiencia', '1');
+  if (payload.postExperience) form.append('experiencia', payload.postExperience);
   form.append('habilidades', payload.postSkills);
-  form.append('disponibilidad', 'Disponible esta semana');
-  form.append('tipo_precio', 'hora');
+  if (payload.postAvailability) form.append('disponibilidad', payload.postAvailability);
+  if (payload.postPriceType) form.append('tipo_precio', payload.postPriceType);
   await apiFetch('/api/mobile/crear_publicacion', { method: 'POST', body: form });
 }

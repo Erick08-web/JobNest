@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { Alert } from 'react-native';
 import { AuthCard, Field, PrimaryButton, Segmented } from '../../components/ui';
-import { categories } from '../../constants/categories';
 import { useAuth } from '../../context/AuthContext';
 import { registerUser } from '../../services/authService';
 import type { UserType } from '../../types/domain';

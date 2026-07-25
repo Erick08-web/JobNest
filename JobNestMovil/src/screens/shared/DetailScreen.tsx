@@ -18,9 +18,9 @@ export function DetailScreen({
 }) {
   const { isLoggedIn, apiFetch, setLoading } = useAuth();
   const item = normalizePublication(publication);
-  const [serviceDate, setServiceDate] = useState('2026-07-10');
-  const [serviceTime, setServiceTime] = useState('10:00');
-  const [serviceMessage, setServiceMessage] = useState('Hola, me interesa contratar este servicio.');
+  const [serviceDate, setServiceDate] = useState('');
+  const [serviceTime, setServiceTime] = useState('');
+  const [serviceMessage, setServiceMessage] = useState('');
 
   const handleRequestService = async () => {
     if (!isLoggedIn) {
@@ -31,6 +31,10 @@ export function DetailScreen({
     const id = getPublicationId(item);
     if (!id) {
       Alert.alert('Servicio no valido', 'Selecciona un servicio publicado.');
+      return;
+    }
+    if (!serviceDate) {
+      Alert.alert('Faltan datos', 'La fecha del servicio es obligatoria.');
       return;
     }
 
@@ -57,7 +61,7 @@ export function DetailScreen({
         <View style={styles.avatarLarge}>
           <Text style={styles.avatarText}>{String(item.nombre_prestador ?? 'JN').slice(0, 2).toUpperCase()}</Text>
         </View>
-        <Text style={styles.profileName}>{item.nombre_prestador}</Text>
+        <Text style={styles.profileName}>{item.nombre_prestador || 'Prestador no especificado'}</Text>
         <Text style={styles.profileRole}>{item.titulo}</Text>
         <View style={styles.metaRow}>
           <Badge text={`${item.promedio_calificacion} rating`} />
