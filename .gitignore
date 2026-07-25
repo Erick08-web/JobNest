@@ -18,6 +18,14 @@ env/
 .env
 .env.*
 !.env.example
+!.env.production.example
+deploy/certs/*
+!deploy/certs/.gitkeep
+certs/
+*.pem
+*.key
+*.crt
+*.p12
 
 # Empaquetados y despliegues locales
 *.zip

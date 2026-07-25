@@ -4,6 +4,13 @@
 .env
 .env.*
 !.env.example
+!.env.production.example
+deploy/certs/
+certs/
+*.pem
+*.key
+*.crt
+*.p12
 
 __pycache__/
 *.py[cod]

@@ -32,6 +32,12 @@ export class ApiError extends Error {
 }
 
 export function getDefaultApiUrl() {
+  const configuredUrl = process.env.EXPO_PUBLIC_API_URL;
+
+  if (configuredUrl) {
+    return configuredUrl.replace(/\/$/, '');
+  }
+
   const scriptUrl = NativeModules.SourceCode?.scriptURL;
 
   if (typeof scriptUrl === 'string') {

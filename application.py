@@ -17,6 +17,7 @@ def cargar_env_local(ruta='.env'):
 cargar_env_local()
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, send_from_directory, abort, g
+from werkzeug.middleware.proxy_fix import ProxyFix
 import pyodbc
 import uuid
 from passlib.hash import argon2
@@ -42,6 +43,13 @@ app.secret_key = os.environ.get('FLASK_SECRET_KEY')
 if not app.secret_key:
     raise RuntimeError('Falta la variable de entorno FLASK_SECRET_KEY')
 
+if os.environ.get('TRUST_PROXY_HEADERS', 'false').lower() == 'true':
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
+
+app.config['SESSION_COOKIE_HTTPONLY'] = os.environ.get('SESSION_COOKIE_HTTPONLY', 'true').lower() == 'true'
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get('SESSION_COOKIE_SECURE', 'false').lower() == 'true'
+app.config['SESSION_COOKIE_SAMESITE'] = os.environ.get('SESSION_COOKIE_SAMESITE', 'Lax')
+
 JWT_ACCESS_MINUTES = int(os.environ.get('JWT_ACCESS_MINUTES', '20'))
 JWT_REFRESH_DAYS = int(os.environ.get('JWT_REFRESH_DAYS', '14'))
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY')
@@ -57,6 +65,29 @@ app.config['MAIL_PASSWORD'] = os.environ.get('EMAIL_PASSWORD')
 app.config['MAIL_USE_TLS'] = os.environ.get('MAIL_USE_TLS', 'false').lower() == 'true'
 app.config['MAIL_USE_SSL'] = os.environ.get('MAIL_USE_SSL', 'true').lower() == 'true'
 mail = Mail(app)
+
+
+def cors_allowed_origins():
+    return {
+        origin.strip()
+        for origin in os.environ.get('CORS_ALLOWED_ORIGINS', '').split(',')
+        if origin.strip()
+    }
+
+
+@app.after_request
+def apply_cors_headers(response):
+    origin = request.headers.get('Origin')
+    allowed = cors_allowed_origins()
+    if origin and origin in allowed:
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Vary'] = 'Origin'
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        response.headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type, X-Device-Name'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, PATCH, DELETE, OPTIONS'
+    if request.method == 'OPTIONS':
+        response.status_code = 204
+    return response
 
 # Configuración BD
 DB_CONFIG = {
@@ -217,6 +248,27 @@ def get_db_connection():
         sqlstate = ex.args[0]
         print(f"❌ Error al conectar a la base de datos (sqlstate: {sqlstate}): {ex}")
         raise
+
+
+@app.route('/health')
+def health():
+    return jsonify({'success': True, 'status': 'ok'}), 200
+
+
+@app.route('/health/ready')
+def health_ready():
+    try:
+        with get_db_connection() as cnxn:
+            cursor = cnxn.cursor()
+            cursor.execute('SELECT 1')
+            cursor.fetchone()
+        return jsonify({'success': True, 'status': 'ready'}), 200
+    except Exception as exc:
+        return jsonify({
+            'success': False,
+            'status': 'not_ready',
+            'message': str(exc)
+        }), 503
 
 def enviar_correo_bienvenida(email, tipo_usuario):
     if tipo_usuario == 'cliente':

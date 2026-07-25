@@ -1,0 +1,146 @@
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Express
+      SA_PASSWORD: ${MSSQL_SA_PASSWORD:?define MSSQL_SA_PASSWORD in .env.production}
+    expose:
+      - "1433"
+    volumes:
+      - sqlserver_data_prod:/var/opt/mssql
+    networks:
+      - jobnest_private
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U SA -P \"$${SA_PASSWORD}\" -C -Q \"SELECT 1\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 45s
+
+  api1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - ${JOBNEST_ENV_FILE:-.env.production}
+    environment:
+      DB_SERVER: sqlserver,1433
+      DB_DRIVER: "{ODBC Driver 18 for SQL Server}"
+      DB_ENCRYPT: "yes"
+      DB_TRUST_SERVER_CERTIFICATE: "no"
+      TRUST_PROXY_HEADERS: "true"
+      SESSION_COOKIE_SECURE: "true"
+      SESSION_COOKIE_HTTPONLY: "true"
+      SESSION_COOKIE_SAMESITE: Lax
+    expose:
+      - "5000"
+    volumes:
+      - jobnest_uploads_prod:/app/static/uploads
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    networks:
+      - jobnest_public
+      - jobnest_private
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  api2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - ${JOBNEST_ENV_FILE:-.env.production}
+    environment:
+      DB_SERVER: sqlserver,1433
+      DB_DRIVER: "{ODBC Driver 18 for SQL Server}"
+      DB_ENCRYPT: "yes"
+      DB_TRUST_SERVER_CERTIFICATE: "no"
+      TRUST_PROXY_HEADERS: "true"
+      SESSION_COOKIE_SECURE: "true"
+      SESSION_COOKIE_HTTPONLY: "true"
+      SESSION_COOKIE_SAMESITE: Lax
+    expose:
+      - "5000"
+    volumes:
+      - jobnest_uploads_prod:/app/static/uploads
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    networks:
+      - jobnest_public
+      - jobnest_private
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: https://${PUBLIC_DOMAIN:?define PUBLIC_DOMAIN in .env.production}
+    environment:
+      NEXT_PUBLIC_API_URL: https://${PUBLIC_DOMAIN:?define PUBLIC_DOMAIN in .env.production}
+    expose:
+      - "3000"
+    depends_on:
+      api1:
+        condition: service_healthy
+      api2:
+        condition: service_healthy
+    networks:
+      - jobnest_public
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000 >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/certs:/etc/nginx/certs:ro
+    depends_on:
+      frontend:
+        condition: service_healthy
+      api1:
+        condition: service_healthy
+      api2:
+        condition: service_healthy
+    networks:
+      - jobnest_public
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/nginx-health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+networks:
+  jobnest_public:
+  jobnest_private:
+    internal: true
+
+volumes:
+  sqlserver_data_prod:
+  jobnest_uploads_prod:
