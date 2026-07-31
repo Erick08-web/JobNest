@@ -3,9 +3,8 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { ArrowLeft, BriefcaseBusiness, Camera, CheckCircle2, ImagePlus, Plus, ShieldCheck, Sparkles } from "lucide-react";
-import { createPublication, editPublication, fetchCurrentUser, listMyPublications, togglePublication, uploadPortfolioWork, type CurrentUser, type Publication } from "../lib/api";
+import { createPublication, editPublication, fetchCurrentUser, listCategories, listMyPublications, togglePublication, uploadPortfolioWork, type Category, type CurrentUser, type Publication } from "../lib/api";
 
-const categories = ["Hogar", "Reparaciones", "Diseño", "Tecnología", "Fotografía", "Construcción", "Legal", "Educación", "Otro"];
 const priceTypes = [
   { value: "hora", label: "Por hora" },
   { value: "servicio", label: "Por servicio" },
@@ -15,6 +14,7 @@ const priceTypes = [
 
 export default function PublishPage() {
   const [user, setUser] = useState<CurrentUser | null>(null);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [publications, setPublications] = useState<Publication[]>([]);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
@@ -22,7 +22,7 @@ export default function PublishPage() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [uploading, setUploading] = useState(false);
   const [publicationImages, setPublicationImages] = useState<File[]>([]);
-  const [form, setForm] = useState({ titulo: "", descripcion: "", categoria: "Reparaciones", salario: "", ubicacion: "Querétaro", experiencia: "1", habilidades: "", disponibilidad: "A convenir", tipo_precio: "servicio", incluye_materiales: false });
+  const [form, setForm] = useState({ titulo: "", descripcion: "", categoria: "", salario: "", ubicacion: "Querétaro", experiencia: "1", habilidades: "", disponibilidad: "A convenir", tipo_precio: "servicio", incluye_materiales: false });
   const [portfolio, setPortfolio] = useState<{ publicacion_id: string; titulo: string; descripcion: string; imagen: File | null }>({ publicacion_id: "", titulo: "", descripcion: "", imagen: null });
 
   const load = async () => {
@@ -33,8 +33,13 @@ export default function PublishPage() {
       if (!current) throw new Error("Inicia sesión como prestador para publicar servicios.");
       setUser(current);
       if (current.tipo_usuario !== "prestador") throw new Error("Solo las cuentas de prestador pueden publicar servicios.");
-      const items = await listMyPublications();
+      const [items, categoryList] = await Promise.all([listMyPublications(), listCategories()]);
       setPublications(items);
+      setCategories(categoryList);
+      setForm((currentForm) => {
+        if (currentForm.categoria && categoryList.some((category) => category.nombre === currentForm.categoria)) return currentForm;
+        return { ...currentForm, categoria: categoryList[0]?.nombre ?? "" };
+      });
       setPortfolio((currentPortfolio) => ({ ...currentPortfolio, publicacion_id: currentPortfolio.publicacion_id || String(items[0]?.id ?? "") }));
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "No fue posible cargar tus publicaciones.");
@@ -50,7 +55,7 @@ export default function PublishPage() {
   const resetPublicationForm = () => {
     setEditingId(null);
     setPublicationImages([]);
-    setForm({ titulo: "", descripcion: "", categoria: "Reparaciones", salario: "", ubicacion: "Querétaro", experiencia: "1", habilidades: "", disponibilidad: "A convenir", tipo_precio: "servicio", incluye_materiales: false });
+    setForm({ titulo: "", descripcion: "", categoria: categories[0]?.nombre ?? "", salario: "", ubicacion: "Querétaro", experiencia: "1", habilidades: "", disponibilidad: "A convenir", tipo_precio: "servicio", incluye_materiales: false });
   };
 
   const selectPublicationImages = (files: FileList | null) => {
@@ -90,7 +95,7 @@ export default function PublishPage() {
     setForm({
       titulo: publication.titulo || "",
       descripcion: publication.descripcion || "",
-      categoria: publication.categoria || "Reparaciones",
+      categoria: publication.categoria || categories[0]?.nombre || "",
       salario: publication.precio ? String(publication.precio) : "",
       ubicacion: publication.ubicacion || "Querétaro",
       experiencia: publication.experiencia ? String(publication.experiencia) : "1",
@@ -146,6 +151,7 @@ export default function PublishPage() {
 
       {message ? <div className="formAlert moduleAlert publishAlert">{message}</div> : null}
       {loading ? <div className="portfolioEmpty publishLoading"><BriefcaseBusiness size={30} /><h3>Cargando tu cuenta...</h3></div> : null}
+      {!loading && !categories.length ? <div className="formAlert moduleAlert publishAlert">No hay categorías activas disponibles para publicar servicios.</div> : null}
 
       <section className="publishWorkspace">
         <form className="publishForm" onSubmit={handleCreate}>
@@ -153,7 +159,7 @@ export default function PublishPage() {
           <label className="fullField"><span>Título del servicio</span><input value={form.titulo} onChange={(event) => update("titulo", event.target.value)} placeholder="Ej. Instalación eléctrica residencial" required /></label>
           <label className="fullField"><span>Descripción</span><textarea value={form.descripcion} onChange={(event) => update("descripcion", event.target.value)} placeholder="Explica qué haces, qué incluye y cómo trabajas." required /></label>
           <div className="formGrid">
-            <label><span>Categoría</span><select value={form.categoria} onChange={(event) => update("categoria", event.target.value)}>{categories.map((item) => <option key={item}>{item}</option>)}</select></label>
+            <label><span>Categoría</span><select value={form.categoria} onChange={(event) => update("categoria", event.target.value)} required>{categories.map((item) => <option key={item.nombre} value={item.nombre}>{item.nombre}</option>)}</select></label>
             <label><span>Precio</span><input value={form.salario} onChange={(event) => update("salario", event.target.value)} placeholder="650" inputMode="decimal" /></label>
             <label><span>Tipo de precio</span><select value={form.tipo_precio} onChange={(event) => update("tipo_precio", event.target.value)}>{priceTypes.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
             <label><span>Ubicación</span><input value={form.ubicacion} onChange={(event) => update("ubicacion", event.target.value)} required /></label>
@@ -164,7 +170,7 @@ export default function PublishPage() {
           <label className="fileDrop publicationImageDrop"><ImagePlus /><span>{publicationImages.length ? `${publicationImages.length} imagen(es) seleccionadas` : "Imágenes de la publicación"}</span><input type="file" multiple accept="image/png,image/jpeg,image/jpg,image/webp" onChange={(event) => selectPublicationImages(event.target.files)} /></label>
           {publicationImages.length ? <div className="publicationImagePreview">{publicationImages.map((file) => <span key={`${file.name}-${file.size}`}>{file.name}</span>)}</div> : null}
           <label className="publishCheck"><input type="checkbox" checked={form.incluye_materiales} onChange={(event) => update("incluye_materiales", event.target.checked)} /><span>Incluye materiales</span></label>
-          <button className="submitButton" disabled={saving}>{saving ? "Guardando..." : editingId ? "Guardar cambios" : "Crear publicación"}</button>
+          <button className="submitButton" disabled={saving || !categories.length}>{saving ? "Guardando..." : editingId ? "Guardar cambios" : "Crear publicación"}</button>
         </form>
 
         <aside className="publishSide">

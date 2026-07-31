@@ -22,6 +22,7 @@ Despues de crear la base, aplica las migraciones en este orden:
 5. `migracion_admin_control.sql`
 6. `migracion_admin_operaciones.sql`
 7. `database/migrations/migracion_v2_compatibilidad_esquema.sql`
+8. `database/migrations/migracion_catalogo_categorias.sql`
 
 `limpiar_password_reset_tokens.sql` no es una migracion de esquema. Es una tarea de mantenimiento y no debe ejecutarse como parte de la instalacion inicial.
 
@@ -50,6 +51,19 @@ docker exec -i <SQLSERVER_CONTAINER> /opt/mssql-tools18/bin/sqlcmd \
   -b \
   -d JobNest \
   -i database/migrations/migracion_v2_compatibilidad_esquema.sql
+```
+
+Para el catalogo obligatorio de categorias:
+
+```bash
+docker exec -i <SQLSERVER_CONTAINER> /opt/mssql-tools18/bin/sqlcmd \
+  -S localhost \
+  -U SA \
+  -P "<SA_PASSWORD>" \
+  -C \
+  -b \
+  -d JobNest \
+  -i database/migrations/migracion_catalogo_categorias.sql
 ```
 
 La base activa del proyecto debe llamarse `JobNest`. La migracion V2 mantiene `USE JobNest` para evitar ejecutar cambios sobre otra base por accidente.
@@ -117,3 +131,15 @@ Si una migracion agrega una columna y despues actualiza datos usando esa columna
 - Crea `PortafolioTrabajos` para el portafolio del prestador.
 
 La migracion no elimina datos, no inserta usuarios, no crea datos de prueba y no modifica contrasenas.
+
+## Catalogo obligatorio de categorias
+
+`database/migrations/migracion_catalogo_categorias.sql` prepara el catalogo oficial de categorias/oficios para instalaciones nuevas de JobNest V2.
+
+Este catalogo es dato operativo obligatorio, no un seed de prueba. Permite que web V2 y la app movil puedan listar categorias y crear la primera publicacion aunque la base aun no tenga publicaciones aprobadas.
+
+La migracion reutiliza `dbo.Categorias` si ya existe en el esquema historico, agrega columnas de control faltantes de forma idempotente y carga 15 oficios oficiales sin duplicar por nombre o slug.
+
+Antes de crear indices unicos, la migracion revisa nombres y slugs historicos normalizados con `LTRIM/RTRIM` y la intercalacion real de SQL Server. Si encuentra duplicados, se detiene con un error controlado para que se resuelvan manualmente.
+
+La migracion no elimina, fusiona ni reescribe categorias historicas arbitrarias. Las categorias historicas sin slug permanecen con `Slug NULL`; SQL Server permite varios `NULL` porque el indice unico de slug es filtrado. Solo las 15 categorias oficiales reciben slugs deterministas.

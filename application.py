@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import secrets
 import smtplib
+import unicodedata
 
 
 def cargar_env_local(ruta='.env'):
@@ -585,20 +586,47 @@ def reject_unknown_fields(source, allowed_fields, blocked_fields):
     return errors
 
 
-def category_exists(cursor, category):
+def normalize_category_slug(value):
+    text = clean_text(value).lower()
+    text = ''.join(
+        char for char in unicodedata.normalize('NFD', text)
+        if unicodedata.category(char) != 'Mn'
+    )
+    text = re.sub(r'[^a-z0-9]+', '-', text).strip('-')
+    return text
+
+
+def get_canonical_category_name(cursor, category):
+    category_name = clean_text(category)
+    if not category_name:
+        return None
+    category_slug = normalize_category_slug(category_name)
     cursor.execute("""
-        SELECT TOP 1 1
-        FROM Publicaciones p
-        WHERE p.Categoria = ?
-          AND p.Activa = 1
-          AND EXISTS (
-              SELECT 1 FROM PublicacionVersiones pv
-              WHERE pv.PublicacionId = p.id
-                AND pv.Estado = 'aprobada'
-                AND pv.EsVersionPublica = 1
-          )
-    """, (category,))
-    return cursor.fetchone() is not None
+        SELECT TOP 1 Nombre
+        FROM Categorias
+        WHERE Activa = 1
+          AND (Nombre = ? OR Slug = ?)
+        ORDER BY CASE WHEN Nombre = ? THEN 0 ELSE 1 END, Nombre
+    """, (category_name, category_slug, category_name))
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
+def category_exists(cursor, category):
+    return get_canonical_category_name(cursor, category) is not None
+
+
+def list_active_categories(cursor):
+    cursor.execute("""
+        SELECT Nombre
+        FROM Categorias
+        WHERE Activa = 1
+        ORDER BY
+            CASE WHEN Orden IS NULL THEN 1 ELSE 0 END,
+            Orden,
+            Nombre
+    """)
+    return [row[0] for row in cursor.fetchall()]
 
 
 def get_admin_emails():
@@ -1721,6 +1749,7 @@ def validar_datos_publicacion(form_data, cursor=None):
     titulo = add_required_text(errors, 'titulo', form_data.get('titulo'), 'El título', min_len=5, max_len=255)
     descripcion = add_required_text(errors, 'descripcion', form_data.get('descripcion'), 'La descripción', min_len=20, max_len=4000)
     categoria = add_required_text(errors, 'categoria', form_data.get('categoria'), 'La categoría', max_len=100)
+    categoria_canonica = categoria
     precio_decimal = parse_positive_decimal(errors, 'salario', form_data.get('salario'), 'El precio', required=True, maximum=1000000)
     ubicacion = add_required_text(errors, 'ubicacion', form_data.get('ubicacion'), 'La ubicación', min_len=3, max_len=255)
     experiencia_int = parse_int_range(errors, 'experiencia', form_data.get('experiencia'), 'La experiencia', minimum=0, maximum=80, required=True)
@@ -1731,13 +1760,15 @@ def validar_datos_publicacion(form_data, cursor=None):
 
     if tipo_precio not in {'hora', 'servicio', 'dia', 'proyecto'}:
         errors['tipo_precio'] = 'El tipo de precio no es válido.'
-    if cursor and categoria and not category_exists(cursor, categoria):
-        errors['categoria'] = 'Selecciona una categoría disponible.'
+    if cursor and categoria:
+        categoria_canonica = get_canonical_category_name(cursor, categoria)
+        if not categoria_canonica:
+            errors['categoria'] = 'Selecciona una categoría disponible.'
 
     return {
         'titulo': titulo,
         'descripcion': descripcion,
-        'categoria': categoria,
+        'categoria': categoria_canonica,
         'precio': precio_decimal,
         'ubicacion': ubicacion,
         'experiencia': experiencia_int,
@@ -2672,21 +2703,7 @@ def mobile_categorias():
         conn = get_db_connection()
         cursor = conn.cursor()
         ensure_control_schema(cursor)
-        cursor.execute("""
-            SELECT DISTINCT p.Categoria
-            FROM Publicaciones p
-            WHERE p.Categoria IS NOT NULL
-              AND LTRIM(RTRIM(p.Categoria)) <> ''
-              AND p.Activa = 1
-              AND EXISTS (
-                  SELECT 1 FROM PublicacionVersiones pv
-                  WHERE pv.PublicacionId = p.id
-                    AND pv.Estado = 'aprobada'
-                    AND pv.EsVersionPublica = 1
-              )
-            ORDER BY p.Categoria
-        """)
-        categorias = [row[0] for row in cursor.fetchall()]
+        categorias = list_active_categories(cursor)
         return jsonify({'success': True, 'categorias': categorias}), 200
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
@@ -2698,6 +2715,11 @@ def mobile_categorias():
     finally:
         if conn:
             conn.close()
+
+
+@app.route('/categorias', methods=['GET'])
+def categorias():
+    return mobile_categorias()
 
 @app.route('/toggle_publicacion/<int:publicacion_id>', methods=['POST'])
 def toggle_publicacion(publicacion_id):
@@ -2810,7 +2832,7 @@ def detalles_publicacion(publicacion_id):
 @app.route('/buscar_publicaciones', methods=['GET'])
 def buscar_publicaciones():
     query = request.args.get('q', '').strip()
-    categoria = request.args.get('categoria', '').strip()
+    categoria = clean_text(request.args.get('categoria'))
     precio_max = request.args.get('precio_max', '').strip()
     experiencia_min = request.args.get('experiencia_min', '').strip()
 
@@ -2840,14 +2862,15 @@ def buscar_publicaciones():
             )
         """
         params = []
+        categoria_filtro = (get_canonical_category_name(cursor, categoria) or categoria) if categoria else None
 
         if query:
             sql += " AND (p.Titulo LIKE ? OR p.Descripcion LIKE ? OR p.Habilidades LIKE ?)"
             params.extend([f'%{query}%', f'%{query}%', f'%{query}%'])
 
-        if categoria:
+        if categoria_filtro:
             sql += " AND p.Categoria = ?"
-            params.append(categoria)
+            params.append(categoria_filtro)
 
         if precio_max:
             try:
@@ -3746,7 +3769,9 @@ def editar_publicacion(publicacion_id):
         if not publicacion:
             return jsonify({'success': False, 'message': 'Publicación no encontrada o no tienes permisos para editarla.'}), 404
 
-        datos = leer_datos_publicacion_form()
+        datos, errors = validar_datos_publicacion(request.form, cursor)
+        if errors:
+            return validation_response(errors)
         imagenes = request.files.getlist('imagenes')
         version_id = crear_version_publicacion(cursor, publicacion_id, user_id, datos)
         guardar_imagenes_version(cursor, publicacion_id, version_id, user_id, imagenes)
@@ -5509,11 +5534,11 @@ def extraer_categoria_y_calificacion(mensaje):
         'carpintero': 'carpinteria',
         'jardinero': 'jardineria',
         'limpieza': 'limpieza',
-        'reparaciones': 'reparaciones',
-        'tecnologia': 'tecnologia',
-        'diseño': 'diseno',
-        'educacion': 'educacion',
-        'bienestar': 'bienestar'
+        'reparaciones': 'reparacion-de-electrodomesticos',
+        'tecnologia': 'tecnologia-y-soporte',
+        'diseño': 'tecnologia-y-soporte',
+        'educacion': 'clases-particulares',
+        'bienestar': 'limpieza'
     }
     categoria = None
     for palabra, cat in categorias.items():
@@ -5572,6 +5597,7 @@ def chatbot_mensaje():
         params = [calificacion_min]
 
         if categoria:
+            categoria = get_canonical_category_name(cursor, categoria) or categoria
             sql += " AND EXISTS (SELECT 1 FROM Publicaciones pub WHERE pub.UsuarioId = u.id AND pub.Categoria = ? AND pub.Activa = 1 AND pub.EstadoRevision = 'aprobada')"
             params.append(categoria)
 

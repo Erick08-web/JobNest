@@ -16,6 +16,10 @@ export type ApiResult<T = unknown> = T & {
   errors?: Record<string, string>;
 };
 
+export type Category = {
+  nombre: string;
+};
+
 export async function backendFetch<T>(path: string, init?: RequestInit): Promise<ApiResult<T>> {
   const response = await fetch(`/api/backend${path}`, {
     ...init,
@@ -83,6 +87,11 @@ export async function registerUser(payload: {
 
 export async function logoutUser() {
   await fetch("/api/backend/logout", { credentials: "include" }).catch(() => null);
+}
+
+export async function listCategories() {
+  const data = await backendFetch<{ categorias: string[] }>("/categorias");
+  return (data.categorias ?? []).filter(Boolean).map((nombre) => ({ nombre }));
 }
 
 

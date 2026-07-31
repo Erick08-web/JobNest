@@ -21,9 +21,8 @@ import {
   Star,
   X
 } from "lucide-react";
-import { listActivePublications, searchPublications, type Publication } from "../lib/api";
+import { listActivePublications, listCategories, searchPublications, type Category, type Publication } from "../lib/api";
 
-const categories = ["Todos", "Hogar", "Reparaciones", "Diseño", "Tecnología", "Fotografía", "Construcción", "Legal", "Educación", "Otro"];
 const availabilityOptions = ["Cualquiera", "Hoy", "Esta semana", "Agenda abierta", "A convenir"];
 type SortMode = "recommended" | "recent" | "price" | "experience";
 
@@ -46,6 +45,7 @@ export default function SearchPage() {
   const [minExperience, setMinExperience] = useState(0);
   const [materialsOnly, setMaterialsOnly] = useState(false);
   const [sort, setSort] = useState<SortMode>("recommended");
+  const [categories, setCategories] = useState<Category[]>([]);
   const [publications, setPublications] = useState<Publication[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -61,6 +61,13 @@ export default function SearchPage() {
       })
       .finally(() => {
         if (mounted) setLoading(false);
+      });
+    listCategories()
+      .then((categoryList) => {
+        if (mounted) setCategories(categoryList);
+      })
+      .catch(() => {
+        if (mounted) setCategories([]);
       });
     return () => { mounted = false; };
   }, []);
@@ -146,7 +153,7 @@ export default function SearchPage() {
           <div className="filterGroup">
             <span>Categoría</span>
             <div className="chipGrid">
-              {categories.map((item) => <button className={category === item ? "selected" : ""} onClick={() => setCategory(item)} key={item}>{item}</button>)}
+              {["Todos", ...categories.map((item) => item.nombre)].map((item) => <button className={category === item ? "selected" : ""} onClick={() => setCategory(item)} key={item}>{item}</button>)}
             </div>
           </div>
 

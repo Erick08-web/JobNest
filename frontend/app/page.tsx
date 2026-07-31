@@ -1,5 +1,8 @@
+"use client";
+
 import Image from "next/image";
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import {
   ArrowRight,
   BadgeCheck,
@@ -24,14 +27,15 @@ import {
   UserRoundCheck,
   Wrench
 } from "lucide-react";
+import { listCategories, type Category } from "./lib/api";
 
-const categories = [
-  { name: "Hogar", icon: Home, count: "84 expertos", accent: "mint" },
-  { name: "Reparaciones", icon: Wrench, count: "62 técnicos", accent: "blue" },
-  { name: "Diseño", icon: Paintbrush, count: "39 creativos", accent: "violet" },
-  { name: "Tecnología", icon: Code2, count: "47 devs", accent: "graphite" },
-  { name: "Fotografía", icon: Camera, count: "31 perfiles", accent: "amber" },
-  { name: "Construcción", icon: Hammer, count: "28 equipos", accent: "teal" }
+const categoryVisuals = [
+  { icon: Home, accent: "mint" },
+  { icon: Wrench, accent: "blue" },
+  { icon: Paintbrush, accent: "violet" },
+  { icon: Code2, accent: "graphite" },
+  { icon: Camera, accent: "amber" },
+  { icon: Hammer, accent: "teal" }
 ];
 
 const professionals = [
@@ -176,6 +180,26 @@ function Hero() {
 }
 
 function Categories() {
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+    listCategories()
+      .then((items) => {
+        if (mounted) setCategories(items);
+      })
+      .catch(() => {
+        if (mounted) setCategories([]);
+      })
+      .finally(() => {
+        if (mounted) setLoading(false);
+      });
+    return () => { mounted = false; };
+  }, []);
+
+  const visibleCategories = categories.slice(0, 6);
+
   return (
     <section className="sectionShell" id="categorias">
       <div className="sectionHeader splitHeader">
@@ -186,17 +210,19 @@ function Categories() {
         <p>Las categorías no son solo etiquetas: ayudan a mostrar experiencia, trabajos y criterios de comparación distintos.</p>
       </div>
       <div className="categoryGrid">
-        {categories.map((category) => {
-          const Icon = category.icon;
+        {visibleCategories.map((category, index) => {
+          const visual = categoryVisuals[index % categoryVisuals.length];
+          const Icon = visual.icon;
           return (
-            <a href={`/buscar?categoria=${encodeURIComponent(category.name)}`} className={`categoryCard ${category.accent}`} key={category.name}>
+            <a href={`/buscar?categoria=${encodeURIComponent(category.nombre)}`} className={`categoryCard ${visual.accent}`} key={category.nombre}>
               <span className="iconSurface"><Icon size={24} /></span>
-              <strong>{category.name}</strong>
-              <small>{category.count}</small>
+              <strong>{category.nombre}</strong>
+              <small>Oficio disponible</small>
               <ChevronRight size={20} />
             </a>
           );
         })}
+        {!loading && !visibleCategories.length ? <p>No hay categorías activas disponibles.</p> : null}
       </div>
     </section>
   );
