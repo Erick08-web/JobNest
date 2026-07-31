@@ -2499,6 +2499,7 @@ def crear_publicacion():
             INSERT INTO Publicaciones (UsuarioId, Titulo, Descripcion, Categoria, Precio, Ubicacion,
                                        Experiencia, Habilidades, Disponibilidad, IncluyeMateriales, TipoPrecio,
                                        Activa, EstadoRevision, ComentarioRevision)
+            OUTPUT INSERTED.id
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pendiente_revision', NULL)
         """
         cursor.execute(sql_insert, (
@@ -2506,8 +2507,10 @@ def crear_publicacion():
             datos['ubicacion'], datos['experiencia'], datos['habilidades'], datos['disponibilidad'],
             datos['incluye_materiales'], datos['tipo_precio']
         ))
-        cursor.execute("SELECT SCOPE_IDENTITY()")
-        nueva_publicacion_id = int(cursor.fetchone()[0])
+        publicacion_row = cursor.fetchone()
+        if not publicacion_row or publicacion_row[0] is None:
+            raise RuntimeError('No fue posible obtener el identificador de la publicación creada.')
+        nueva_publicacion_id = int(publicacion_row[0])
         version_id = crear_version_publicacion(cursor, nueva_publicacion_id, user_id, datos)
         guardar_imagenes_version(cursor, nueva_publicacion_id, version_id, user_id, imagenes)
         audit_event(cursor, 'publicacion_enviada_revision', 'Publicaciones', nueva_publicacion_id,
@@ -3925,6 +3928,14 @@ def calificar_servicio():
         else:
             evaluado_id = cliente_id
 
+        cursor.execute("""
+            SELECT id
+            FROM Resenas
+            WHERE SolicitudServicioId = ? AND RevisorId = ?
+        """, (solicitud_id, user_id))
+        if cursor.fetchone():
+            return jsonify({'success': False, 'message': 'Ya calificaste esta solicitud.'}), 409
+
         comentario_final = opcion_predeterminada
         if comentario:
             comentario_final += f"\n{comentario}" if comentario_final else comentario
@@ -4206,6 +4217,9 @@ def procesar_pago():
 
     if not solicitud_id or not metodo or not monto:
         return jsonify({'success': False, 'message': 'Datos incompletos'}), 400
+    metodo_normalizado = str(metodo).strip().lower()
+    if metodo_normalizado not in {'efectivo', 'tarjeta'}:
+        return jsonify({'success': False, 'message': 'Método de pago no soportado'}), 400
 
     user_id = session['user_id']
     tipo = session['tipo_usuario']
@@ -4232,7 +4246,7 @@ def procesar_pago():
         if monto != precio_esperado:
             return jsonify({'success': False, 'message': 'El monto no coincide con el precio del servicio'}), 400
 
-        cursor.execute("SELECT id FROM MetodosPago WHERE Nombre = ?", (metodo.capitalize(),))
+        cursor.execute("SELECT id FROM MetodosPago WHERE Nombre = ?", (metodo_normalizado.capitalize(),))
         metodo_row = cursor.fetchone()
         if not metodo_row:
             return jsonify({'success': False, 'message': 'Método de pago no válido'}), 400
@@ -4241,7 +4255,7 @@ def procesar_pago():
         cursor.execute("SELECT id FROM Estatus WHERE Nombre = 'completado'")
         estatus_completado = cursor.fetchone()[0]
 
-        if metodo == 'efectivo':
+        if metodo_normalizado == 'efectivo':
             cursor.execute("""
                 INSERT INTO Pagos (SolicitudServicioId, Monto, Moneda, MetodoId, EstatusId, Procesador, PagadoEn, CreadoEn)
                 VALUES (?, ?, 'MXN', ?, ?, 'Efectivo', GETDATE(), GETDATE())
@@ -4249,7 +4263,7 @@ def procesar_pago():
             conn.commit()
             return jsonify({'success': True, 'message': 'Pago registrado exitosamente. El servicio ha sido pagado.'}), 200
 
-        elif metodo == 'tarjeta':
+        elif metodo_normalizado == 'tarjeta':
             numero = data.get('numero')
             nombre = data.get('nombre')
             expiracion = data.get('expiracion')
@@ -4284,9 +4298,6 @@ def procesar_pago():
             conn.commit()
             return jsonify({'success': True, 'message': 'Pago procesado exitosamente', 'transaccion_id': transaccion_id}), 200
 
-        else:
-            return jsonify({'success': False, 'message': 'Método de pago no soportado'}), 400
-
     except Exception as e:
         print(f"Error en procesar_pago: {e}")
         return jsonify({'success': False, 'message': str(e)}), 500
@@ -4315,9 +4326,12 @@ def actualizar_estado_solicitud(solicitud_id):
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        cursor.execute("SELECT id FROM SolicitudesServicios WHERE id = ? AND PrestadorId = ?", (solicitud_id, user_id))
-        if not cursor.fetchone():
+        cursor.execute("SELECT Estado FROM SolicitudesServicios WHERE id = ? AND PrestadorId = ?", (solicitud_id, user_id))
+        solicitud_estado = cursor.fetchone()
+        if not solicitud_estado:
             return jsonify({'success': False, 'message': 'No tienes permiso para modificar esta solicitud'}), 403
+        if solicitud_estado[0] != 'pendiente':
+            return jsonify({'success': False, 'message': 'La solicitud ya fue atendida y no puede modificarse nuevamente.'}), 409
 
         # Obtener datos para el correo antes de actualizar
         cursor.execute("""
@@ -4328,12 +4342,31 @@ def actualizar_estado_solicitud(solicitud_id):
             WHERE s.id = ?
         """, (solicitud_id,))
         solicitud_info = cursor.fetchone()
+        if not solicitud_info:
+            return jsonify({'success': False, 'message': 'Solicitud no encontrada'}), 404
         cliente_id = solicitud_info[0]
         titulo_servicio = solicitud_info[1]
         prestador_nombre = f"{solicitud_info[2]} {solicitud_info[3]} {solicitud_info[4]}".strip()
 
-        cursor.execute("UPDATE SolicitudesServicios SET Estado = ?, FechaAceptacion = GETDATE() WHERE id = ?",
-                       (nuevo_estado, solicitud_id))
+        if nuevo_estado == 'aceptada':
+            cursor.execute("""
+                UPDATE SolicitudesServicios
+                SET Estado = ?, FechaAceptacion = GETDATE()
+                WHERE id = ? AND PrestadorId = ? AND Estado = 'pendiente'
+            """, (nuevo_estado, solicitud_id, user_id))
+        else:
+            cursor.execute("""
+                UPDATE SolicitudesServicios
+                SET Estado = ?
+                WHERE id = ? AND PrestadorId = ? AND Estado = 'pendiente'
+            """, (nuevo_estado, solicitud_id, user_id))
+        if cursor.rowcount != 1:
+            conn.rollback()
+            cursor.execute("SELECT Estado FROM SolicitudesServicios WHERE id = ? AND PrestadorId = ?", (solicitud_id, user_id))
+            estado_actual = cursor.fetchone()
+            if not estado_actual:
+                return jsonify({'success': False, 'message': 'No tienes permiso para modificar esta solicitud'}), 403
+            return jsonify({'success': False, 'message': f"La solicitud ya fue atendida y no puede modificarse nuevamente. Estado actual: {estado_actual[0]}."}), 409
 
         # Enviar correo al cliente
         cursor.execute("SELECT Email FROM Usuarios WHERE id = ?", (cliente_id,))

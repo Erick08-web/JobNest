@@ -23,6 +23,8 @@ Despues de crear la base, aplica las migraciones en este orden:
 6. `migracion_admin_operaciones.sql`
 7. `database/migrations/migracion_v2_compatibilidad_esquema.sql`
 8. `database/migrations/migracion_catalogo_categorias.sql`
+9. `database/migrations/migracion_catalogos_pago.sql`
+10. `database/migrations/migracion_integridad_solicitudes_resenas.sql`
 
 `limpiar_password_reset_tokens.sql` no es una migracion de esquema. Es una tarea de mantenimiento y no debe ejecutarse como parte de la instalacion inicial.
 
@@ -64,6 +66,32 @@ docker exec -i <SQLSERVER_CONTAINER> /opt/mssql-tools18/bin/sqlcmd \
   -b \
   -d JobNest \
   -i database/migrations/migracion_catalogo_categorias.sql
+```
+
+Para los catalogos operativos de pago:
+
+```bash
+docker exec -i <SQLSERVER_CONTAINER> /opt/mssql-tools18/bin/sqlcmd \
+  -S localhost \
+  -U SA \
+  -P "<SA_PASSWORD>" \
+  -C \
+  -b \
+  -d JobNest \
+  -i database/migrations/migracion_catalogos_pago.sql
+```
+
+Para la integridad de resenas por solicitud:
+
+```bash
+docker exec -i <SQLSERVER_CONTAINER> /opt/mssql-tools18/bin/sqlcmd \
+  -S localhost \
+  -U SA \
+  -P "<SA_PASSWORD>" \
+  -C \
+  -b \
+  -d JobNest \
+  -i database/migrations/migracion_integridad_solicitudes_resenas.sql
 ```
 
 La base activa del proyecto debe llamarse `JobNest`. La migracion V2 mantiene `USE JobNest` para evitar ejecutar cambios sobre otra base por accidente.
@@ -143,3 +171,21 @@ La migracion reutiliza `dbo.Categorias` si ya existe en el esquema historico, ag
 Antes de crear indices unicos, la migracion revisa nombres y slugs historicos normalizados con `LTRIM/RTRIM` y la intercalacion real de SQL Server. Si encuentra duplicados, se detiene con un error controlado para que se resuelvan manualmente.
 
 La migracion no elimina, fusiona ni reescribe categorias historicas arbitrarias. Las categorias historicas sin slug permanecen con `Slug NULL`; SQL Server permite varios `NULL` porque el indice unico de slug es filtrado. Solo las 15 categorias oficiales reciben slugs deterministas.
+
+## Catalogos operativos de pago
+
+`database/migrations/migracion_catalogos_pago.sql` carga los valores minimos que el backend V2 necesita para procesar pagos:
+
+- `MetodosPago.Nombre = 'Efectivo'`
+- `MetodosPago.Nombre = 'Tarjeta'`
+- `Estatus.Nombre = 'completado'`
+
+Estos registros son datos operativos obligatorios, no seeds de prueba. La migracion verifica que las tablas y columnas existan, inserta solo valores faltantes y puede ejecutarse mas de una vez sin duplicarlos.
+
+## Integridad de resenas por solicitud
+
+`database/migrations/migracion_integridad_solicitudes_resenas.sql` evita que un mismo usuario califique dos veces la misma solicitud de servicio.
+
+Antes de crear el indice unico filtrado `UX_Resenas_Solicitud_Revisor`, la migracion revisa si ya existen duplicados historicos por `SolicitudServicioId` y `RevisorId`. Si encuentra duplicados, se detiene con un error controlado para que el equipo los revise manualmente; no elimina, fusiona ni modifica resenas existentes.
+
+El indice es filtrado para mantener compatibilidad con resenas historicas ligadas solo a `OrdenId`.
