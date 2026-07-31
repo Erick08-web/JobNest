@@ -47,7 +47,7 @@ export default async function ProfessionalProfilePage({ params }: PageProps) {
           <span><ShieldCheck size={18} /> {professional.verified ? "Profesional verificado" : "Perfil en revisión"}</span>
         </div>
         <div className="profileIntro">
-          <span className="eyebrow"><Sparkles size={16} /> Perfil profesional V2</span>
+          <span className="eyebrow"><Sparkles size={16} /> Perfil profesional</span>
           <h1>{professional.name}</h1>
           <p className="profileRole">{professional.role}</p>
           <p className="profileBio">{professional.bio}</p>

@@ -74,11 +74,11 @@ export default function ServiceProfilePage() {
   };
 
   if (loading) {
-    return <main className="profilePage"><div className="emptyResults serviceLoading"><Sparkles size={34} /><h3>Cargando perfil real...</h3><p>Consultando Flask y SQL Server.</p></div></main>;
+    return <main className="profilePage"><div className="emptyResults serviceLoading"><Sparkles size={34} /><h3>Cargando perfil...</h3><p>Estamos preparando la información del profesional.</p></div></main>;
   }
 
   if (!publication) {
-    return <main className="profilePage"><div className="emptyResults serviceLoading"><ShieldCheck size={34} /><h3>{message}</h3><p>La vista de perfil usa rutas protegidas del proyecto original.</p><Link href="/login">Iniciar sesión</Link></div></main>;
+    return <main className="profilePage"><div className="emptyResults serviceLoading"><ShieldCheck size={34} /><h3>{message}</h3><p>Inicia sesión para consultar este perfil profesional.</p><Link href="/login">Iniciar sesión</Link></div></main>;
   }
 
   return (
@@ -98,7 +98,7 @@ export default function ServiceProfilePage() {
           <span><ShieldCheck size={18} /> Perfil conectado a JobNest</span>
         </div>
         <div className="profileIntro">
-          <span className="eyebrow"><Sparkles size={16} /> Perfil profesional real</span>
+          <span className="eyebrow"><Sparkles size={16} /> Perfil profesional</span>
           <h1>{publication.prestador_nombre || "Profesional JobNest"}</h1>
           <p className="profileRole">{publication.titulo}</p>
           <p className="profileBio">{publication.descripcion}</p>
@@ -162,9 +162,9 @@ export default function ServiceProfilePage() {
         <aside className="profileAside">
           <article className="asideCard">
             <span className="sectionKicker">Confianza</span>
-            <p><CheckCircle2 size={17} /> Publicación activa en la base de datos</p>
+            <p><CheckCircle2 size={17} /> Publicación disponible</p>
             <p><CheckCircle2 size={17} /> Datos del prestador validados por sesión</p>
-            <p><CheckCircle2 size={17} /> Solicitud conectada al backend real</p>
+            <p><CheckCircle2 size={17} /> Solicitud lista para seguimiento</p>
           </article>
           <article className="asideCard">
             <span className="sectionKicker">Contacto</span>

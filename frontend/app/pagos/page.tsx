@@ -67,7 +67,7 @@ export default function PaymentsPage() {
     <main className="paymentsPage">
       <header className="moduleTopbar"><Link href="/cliente" className="backLink"><ArrowLeft size={18} /> Volver</Link><strong>Pagos</strong></header>
       <section className="paymentsHero">
-        <div><span className="sectionKicker">Centro financiero real</span><h1>Pagos conectados a tus solicitudes aceptadas.</h1><p>Solo aparecen servicios aceptados que aún no tienen pago completado en la base de datos.</p></div>
+        <div><span className="sectionKicker">Centro financiero</span><h1>Pagos conectados a tus solicitudes aceptadas.</h1><p>Solo aparecen servicios aceptados que aún están pendientes de pago.</p></div>
         <aside className="walletCard"><span>JobNest Wallet</span><strong>{money(total)}</strong><p>Pendiente por confirmar</p><div><LockKeyhole size={18} /> Pago protegido</div></aside>
       </section>
 
@@ -81,7 +81,7 @@ export default function PaymentsPage() {
         {message ? <div className="formAlert moduleAlert">{message}</div> : null}
 
         <section className="paymentTimeline">
-          <div className="sectionTitleRow"><div><span className="sectionKicker">Movimientos reales</span><h2>Servicios aceptados</h2></div><button type="button" onClick={() => void load()}>Actualizar</button></div>
+          <div className="sectionTitleRow"><div><span className="sectionKicker">Movimientos</span><h2>Servicios aceptados</h2></div><button type="button" onClick={() => void load()}>Actualizar</button></div>
           {loading ? <div className="portfolioEmpty"><CreditCard size={30} /><h3>Cargando pagos...</h3></div> : null}
           {!loading && !payments.length ? <div className="portfolioEmpty"><CheckCircle2 size={30} /><h3>No tienes pagos pendientes</h3><p>Cuando un prestador acepte una solicitud, aparecerá aquí.</p></div> : null}
           {payments.map((payment) => (
@@ -110,7 +110,7 @@ export default function PaymentsPage() {
               <button className="submitButton" disabled={processing}>{processing ? "Procesando..." : `Pagar ${money(selected.precio)}`}</button>
             </form>
           ) : null}
-          <article><BadgeCheck /><h3>Recibos claros</h3><p>Después del pago, Flask registra el movimiento en la tabla de pagos.</p></article>
+          <article><BadgeCheck /><h3>Recibos claros</h3><p>Después del pago, el movimiento queda registrado para seguimiento.</p></article>
           <article><CalendarDays /><h3>Pagos por servicio</h3><p>Cada pago está asociado a una solicitud aceptada.</p></article>
         </aside>
       </section>

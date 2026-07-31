@@ -61,9 +61,9 @@ export default function AgendaPage() {
     <main className="modulePage agendaRealPage">
       <Link href="/profesional" className="backLink"><ArrowLeft size={18} /> Volver</Link>
       <section className="moduleHero agendaHero">
-        <span className="sectionKicker">Agenda real</span>
+        <span className="sectionKicker">Agenda</span>
         <h1>{user ? `${user.nombres}, estos son tus próximos servicios.` : "Agenda profesional"}</h1>
-        <p>Trabajos aceptados desde solicitudes reales, organizados por fecha y hora.</p>
+        <p>Trabajos aceptados, organizados por fecha y hora.</p>
       </section>
 
       <section className="agendaOverview">

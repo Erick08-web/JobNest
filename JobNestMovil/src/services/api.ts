@@ -17,6 +17,27 @@ type ParsedResponse<T> = {
   data: T;
 };
 
+const GENERIC_ACTION_ERROR = 'No pudimos completar la acción. Inténtalo nuevamente.';
+const GENERIC_CONNECTION_ERROR = 'No pudimos conectarnos. Revisa tu conexión e inténtalo de nuevo.';
+const TECHNICAL_ERROR_PATTERNS = [
+  /network request failed/i,
+  /failed to fetch/i,
+  /error\s*500/i,
+  /api error/i,
+  /database error/i,
+  /backend unavailable/i,
+  /backend/i,
+  /endpoint/i,
+  /base de datos/i,
+  /database/i,
+  /servidor/i,
+];
+
+export function getUserSafeMessage(message: unknown, fallback = GENERIC_ACTION_ERROR) {
+  if (typeof message !== 'string' || !message.trim()) return fallback;
+  return TECHNICAL_ERROR_PATTERNS.some((pattern) => pattern.test(message)) ? fallback : message;
+}
+
 let refreshPromise: Promise<StoredTokens> | null = null;
 
 export class ApiError extends Error {
@@ -88,10 +109,17 @@ async function requestWithJwt<T>(
     headers.Authorization = `Bearer ${tokens.accessToken}`;
   }
 
-  const response = await fetch(`${normalizedBase}${normalizedPath}`, {
-    ...options,
-    headers,
-  });
+  let response: Response;
+
+  try {
+    response = await fetch(`${normalizedBase}${normalizedPath}`, {
+      ...options,
+      headers,
+    });
+  } catch (error) {
+    console.error('apiRequest network error', error);
+    throw new Error(GENERIC_CONNECTION_ERROR);
+  }
 
   const parsed = await parseResponse<T>(response, options);
 
@@ -113,7 +141,7 @@ async function requestWithJwt<T>(
 
   if (!response.ok) {
     const errorData = parsed.data as { message?: string; error?: string; errors?: Record<string, string> };
-    throw new ApiError(errorData?.message || errorData?.error || `Error ${response.status}`, response.status, errorData?.errors ?? {});
+    throw new ApiError(getUserSafeMessage(errorData?.message || errorData?.error), response.status, errorData?.errors ?? {});
   }
 
   return parsed.data;
@@ -151,13 +179,20 @@ async function performRefresh(apiUrl: string, handlers: ApiHandlers) {
     throw new Error('No hay refresh token disponible.');
   }
 
-  const response = await fetch(`${apiUrl.replace(/\/$/, '')}/api/mobile/auth/refresh`, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      Authorization: `Bearer ${tokens.refreshToken}`,
-    },
-  });
+  let response: Response;
+
+  try {
+    response = await fetch(`${apiUrl.replace(/\/$/, '')}/api/mobile/auth/refresh`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${tokens.refreshToken}`,
+      },
+    });
+  } catch (error) {
+    console.error('refresh token network error', error);
+    throw new Error(GENERIC_CONNECTION_ERROR);
+  }
   const parsed = await parseResponse<{
     access_token?: string;
     refresh_token?: string;
@@ -165,7 +200,7 @@ async function performRefresh(apiUrl: string, handlers: ApiHandlers) {
   }>(response, {});
 
   if (!response.ok || !parsed.data.access_token || !parsed.data.refresh_token) {
-    throw new Error(parsed.data.message || 'No fue posible renovar la sesión.');
+    throw new Error(getUserSafeMessage(parsed.data.message, 'No fue posible renovar la sesión.'));
   }
 
   const nextTokens = {

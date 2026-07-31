@@ -29,7 +29,7 @@ export function TopBar({
       </Pressable>
       <View style={styles.topActions}>
         <Pressable style={styles.iconButton} onPress={onSettings}>
-          <Text style={styles.iconButtonText}>API</Text>
+          <Text style={styles.iconButtonText}>Ajustes</Text>
         </Pressable>
         {isLoggedIn ? (
           <Pressable style={styles.iconButton} onPress={onLogout}>

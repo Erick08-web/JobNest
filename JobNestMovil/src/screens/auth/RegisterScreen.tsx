@@ -73,7 +73,7 @@ export function RegisterScreen({
       Alert.alert('Cuenta creada', 'Ahora puedes iniciar sesion en JobNestMovil.');
       onRegistered({ email });
     } catch (error) {
-      const parsed = mergeServerErrors<RegisterField>(error, 'Revisa la conexion con la API.');
+      const parsed = mergeServerErrors<RegisterField>(error, 'No pudimos conectarnos. Revisa tu conexión e inténtalo de nuevo.');
       setErrors(parsed.errors);
       Alert.alert('No se pudo registrar', parsed.message);
     } finally {

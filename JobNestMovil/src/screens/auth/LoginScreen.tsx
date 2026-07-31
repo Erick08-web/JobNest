@@ -37,7 +37,7 @@ export function LoginScreen({
     try {
       await login(email, loginPassword);
     } catch (error) {
-      const parsed = mergeServerErrors<LoginField>(error, 'Revisa tu API y tus datos.');
+      const parsed = mergeServerErrors<LoginField>(error, 'No pudimos iniciar sesión. Revisa tus datos e inténtalo de nuevo.');
       setErrors(parsed.errors);
       Alert.alert('No se pudo iniciar sesion', parsed.message);
     }

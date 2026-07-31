@@ -47,7 +47,7 @@ export function ExploreScreen({
           </Pressable>
         ))}
       </View>
-      <GhostButton title="Actualizar desde API" onPress={onRefresh} disabled={loading} />
+      <GhostButton title="Actualizar servicios" onPress={onRefresh} disabled={loading} />
       {loading ? (
         <LoadingPill />
       ) : error ? (

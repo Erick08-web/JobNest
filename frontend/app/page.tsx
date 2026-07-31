@@ -150,7 +150,7 @@ function Hero() {
           <span className="eyebrow"><Sparkles size={16} /> Plataforma de confianza profesional</span>
           <h1>Contrata profesionales con evidencia, no con suerte.</h1>
           <p>
-            JobNest V2 convierte la búsqueda de servicios en una experiencia clara: compara perfiles,
+            JobNest convierte la búsqueda de servicios en una experiencia clara: compara perfiles,
             revisa portafolios reales y solicita ayuda con señales de confianza desde el primer vistazo.
           </p>
           <SearchPanel />
@@ -160,7 +160,7 @@ function Hero() {
             <span><CreditCard size={18} /> Pagos organizados</span>
           </div>
         </div>
-        <aside className="heroShowcase" aria-label="Vista previa de JobNest V2">
+        <aside className="heroShowcase" aria-label="Vista previa de JobNest">
           <div className="showcasePhoto">
             <Image src="/images/hero.jpg" alt="Profesional trabajando" fill priority sizes="(max-width: 900px) 100vw, 44vw" />
             <div className="floatingBadge"><ShieldCheck size={18} /> Trabajo verificado</div>

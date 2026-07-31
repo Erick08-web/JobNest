@@ -73,7 +73,7 @@ export default function ClientDashboardPage() {
         <div className="dashboardHeroCard clientHero">
           <span className="sectionKicker">Dashboard cliente</span>
           <h1>{user ? `Hola, ${user.nombres}.` : "Tu centro de contratación."}</h1>
-          <p>Servicios activos, mensajes y pagos reales de tu cuenta JobNest.</p>
+          <p>Servicios activos, mensajes y pagos de tu cuenta JobNest.</p>
           <Link href="/buscar" className="primaryButton"><Search size={18} /> Buscar profesional</Link>
         </div>
         {message ? <div className="formAlert moduleAlert">{message}</div> : null}

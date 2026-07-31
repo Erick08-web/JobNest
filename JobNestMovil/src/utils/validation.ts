@@ -1,4 +1,5 @@
 import type { FieldErrors } from '../types/forms';
+import { getUserSafeMessage } from '../services/api';
 
 export function cleanText(value: string) {
   return value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').trim();
@@ -44,7 +45,7 @@ export function isHour(value: string) {
 export function mergeServerErrors<T extends string>(error: unknown, fallback: string): { message: string; errors: FieldErrors<T> } {
   if (error instanceof Error) {
     const maybe = error as Error & { errors?: FieldErrors<T> };
-    return { message: error.message || fallback, errors: maybe.errors ?? {} };
+    return { message: getUserSafeMessage(error.message, fallback), errors: maybe.errors ?? {} };
   }
   return { message: fallback, errors: {} };
 }

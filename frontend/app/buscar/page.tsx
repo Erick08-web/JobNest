@@ -57,7 +57,7 @@ export default function SearchPage() {
         if (mounted) setPublications(items);
       })
       .catch((err) => {
-        if (mounted) setError(err?.status === 401 ? "Para buscar profesionales reales inicia sesión en JobNest V2." : err.message || "No fue posible consultar publicaciones.");
+        if (mounted) setError(err?.status === 401 ? "Para buscar profesionales inicia sesión en JobNest." : err.message || "No fue posible consultar publicaciones.");
       })
       .finally(() => {
         if (mounted) setLoading(false);
@@ -134,9 +134,9 @@ export default function SearchPage() {
 
       <section className="searchHero">
         <div>
-          <span className="eyebrow"><Sparkles size={16} /> Búsqueda real V2</span>
-          <h1>Encuentra publicaciones reales de profesionales en JobNest.</h1>
-          <p>La vista ya consulta tu base de datos. Filtra por oficio, precio, experiencia, disponibilidad y materiales.</p>
+          <span className="eyebrow"><Sparkles size={16} /> Búsqueda JobNest</span>
+          <h1>Encuentra publicaciones de profesionales en JobNest.</h1>
+          <p>Encuentra profesionales y filtra por oficio, precio, experiencia, disponibilidad y materiales.</p>
         </div>
         <form className="searchHeroPanel" onSubmit={(event) => { event.preventDefault(); void handleRemoteSearch(); }}>
           <Search size={22} />
@@ -208,12 +208,12 @@ export default function SearchPage() {
             <div className="emptyResults authRequiredBox">
               <ShieldCheck size={34} />
               <h3>{error}</h3>
-              <p>El proyecto original protege las publicaciones detrás de sesión. Entra con tu cuenta para ver datos reales.</p>
+              <p>Entra con tu cuenta para ver publicaciones disponibles.</p>
               <Link href="/login">Iniciar sesión</Link>
             </div>
           ) : null}
 
-          {loading ? <div className="emptyResults"><Search size={34} /><h3>Cargando publicaciones reales...</h3><p>Estamos consultando Flask y SQL Server.</p></div> : null}
+          {loading ? <div className="emptyResults"><Search size={34} /><h3>Cargando publicaciones...</h3><p>Estamos preparando tus resultados.</p></div> : null}
 
           {!loading && !error ? (
             <div className="resultsGrid">
@@ -262,9 +262,9 @@ export default function SearchPage() {
 
         <aside className="contextPanel">
           <div className="contextCard">
-            <span className="sectionKicker">Base real</span>
-            <h3>Esta pantalla ya no usa datos demo.</h3>
-            <p>Los resultados vienen de las publicaciones activas que existen en SQL Server mediante Flask.</p>
+            <span className="sectionKicker">Resultados</span>
+            <h3>Publicaciones disponibles</h3>
+            <p>Los resultados muestran servicios activos de profesionales en JobNest.</p>
             <div className="contextMetric"><strong>{publications.length}</strong><span>publicaciones consultadas</span></div>
             <div className="contextMetric"><strong>{filteredPublications.filter((item) => item.incluye_materiales).length}</strong><span>incluyen materiales</span></div>
           </div>

@@ -17,7 +17,7 @@ export function ProfileScreen({ onSettings }: { onSettings: () => void }) {
         <Text style={styles.profileRole}>{currentUserType}</Text>
       </View>
       <View style={styles.actionGrid}>
-        <GhostButton title="Conexion con API" onPress={onSettings} />
+        <GhostButton title="Ajustes de conexión" onPress={onSettings} />
         <GhostButton title="Cerrar sesion" onPress={logout} />
       </View>
     </View>

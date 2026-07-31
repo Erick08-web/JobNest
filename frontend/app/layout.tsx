@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "JobNest V2 | Profesionales confiables para cada proyecto",
+  title: "JobNest | Profesionales confiables para cada proyecto",
   description: "Marketplace premium para encontrar, comparar y contratar profesionales con confianza visible."
 };
 

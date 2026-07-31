@@ -75,7 +75,7 @@ export default function MessagesPage() {
       <header className="moduleTopbar"><Link href={home} className="backLink"><ArrowLeft size={18} /> Volver</Link><strong>Mensajes</strong></header>
       <section className="messagesShell">
         <aside className="inboxPanel">
-          <div className="inboxHeader"><span className="sectionKicker">Inbox real</span><h1>Conversaciones</h1></div>
+          <div className="inboxHeader"><span className="sectionKicker">Mensajes</span><h1>Conversaciones</h1></div>
           <label className="inboxSearch"><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar por servicio o persona" /></label>
           <div className="conversationList">
             {loading ? <div className="portfolioEmpty"><MessageCircle size={28} /><h3>Cargando...</h3></div> : null}
@@ -92,7 +92,7 @@ export default function MessagesPage() {
 
         <section className="chatPanel">
           <div className="chatHeader">
-            <div><span className="sectionKicker">Hilo de solicitud</span><h2>{active ? active.titulo_publicacion : "Selecciona una conversación"}</h2><p><ShieldCheck size={16} /> Mensajes conectados al backend real</p></div>
+            <div><span className="sectionKicker">Hilo de solicitud</span><h2>{active ? active.titulo_publicacion : "Selecciona una conversación"}</h2><p><ShieldCheck size={16} /> Mensajes de tus solicitudes</p></div>
             {active ? <Link href="/solicitudes">Ver solicitud</Link> : <button disabled>Ver solicitud</button>}
           </div>
           <div className="serviceContextBar">
@@ -115,7 +115,7 @@ export default function MessagesPage() {
         </section>
 
         <aside className="chatInsightPanel">
-          <article><span className="sectionKicker">Confianza</span><h3>Resumen del hilo</h3><p>{active ? `Conversación con ${active.otro_nombre} sobre ${active.titulo_publicacion}.` : "Selecciona un hilo para ver contexto."}</p><div><CheckCheck size={18} /> Datos reales de la solicitud</div></article>
+          <article><span className="sectionKicker">Confianza</span><h3>Resumen del hilo</h3><p>{active ? `Conversación con ${active.otro_nombre} sobre ${active.titulo_publicacion}.` : "Selecciona un hilo para ver contexto."}</p><div><CheckCheck size={18} /> Datos de la solicitud</div></article>
           <article><span className="sectionKicker">Siguiente paso</span><h3>Coordinar servicio</h3><p>Usa mensajes para acordar detalles antes de aceptar, pagar o concluir.</p><Link href="/solicitudes">Ir a solicitudes</Link></article>
         </aside>
       </section>

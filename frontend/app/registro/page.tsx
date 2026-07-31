@@ -39,9 +39,9 @@ export default function RegisterPage() {
       <Link href="/" className="authBrand">JobNest</Link>
       <section className="authShell wideAuth">
         <aside className="authStory">
-          <span className="eyebrow"><ShieldCheck size={16} /> Cuenta real</span>
+          <span className="eyebrow"><ShieldCheck size={16} /> Cuenta JobNest</span>
           <h1>Crea una cuenta lista para contratar o publicar servicios.</h1>
-          <p>El registro guarda tu usuario en la misma base de datos del proyecto Flask actual, pero con la experiencia visual de JobNest V2.</p>
+          <p>Crea tu cuenta para gestionar servicios, solicitudes y pagos desde JobNest.</p>
           <div className="rolePreview"><span className={role === "cliente" ? "active" : ""}>Cliente</span><span className={role === "prestador" ? "active" : ""}>Profesional</span></div>
         </aside>
         <form className="authCard registerCard" onSubmit={handleSubmit}>

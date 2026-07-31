@@ -38,10 +38,10 @@ export default function LoginPage() {
       <Link href="/" className="authBrand">JobNest</Link>
       <section className="authShell">
         <aside className="authStory">
-          <span className="eyebrow"><Sparkles size={16} /> JobNest V2</span>
+          <span className="eyebrow"><Sparkles size={16} /> JobNest</span>
           <h1>Entra a tu espacio de confianza profesional.</h1>
           <p>Continúa solicitudes, conversaciones, pagos y publicaciones desde una experiencia limpia y enfocada.</p>
-          <div className="authTrustCard"><ShieldCheck /><strong>Sesión conectada a tu base de datos real.</strong><span>Usa el mismo usuario que ya tenías en JobNest.</span></div>
+          <div className="authTrustCard"><ShieldCheck /><strong>Continúa con tu cuenta de JobNest.</strong><span>Accede a tus solicitudes, pagos y publicaciones.</span></div>
         </aside>
         <form className="authCard" onSubmit={handleSubmit}>
           <div>

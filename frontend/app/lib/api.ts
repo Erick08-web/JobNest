@@ -20,19 +20,47 @@ export type Category = {
   nombre: string;
 };
 
+const GENERIC_ACTION_ERROR = "No pudimos completar la acción. Inténtalo nuevamente.";
+const GENERIC_CONNECTION_ERROR = "No fue posible conectarnos en este momento.";
+const TECHNICAL_ERROR_PATTERNS = [
+  /network request failed/i,
+  /failed to fetch/i,
+  /error\s*500/i,
+  /api error/i,
+  /database error/i,
+  /backend unavailable/i,
+  /backend/i,
+  /endpoint/i,
+  /base de datos/i,
+  /database/i,
+  /servidor/i
+];
+
+export function getUserSafeMessage(message: unknown, fallback = GENERIC_ACTION_ERROR) {
+  if (typeof message !== "string" || !message.trim()) return fallback;
+  return TECHNICAL_ERROR_PATTERNS.some((pattern) => pattern.test(message)) ? fallback : message;
+}
+
 export async function backendFetch<T>(path: string, init?: RequestInit): Promise<ApiResult<T>> {
-  const response = await fetch(`/api/backend${path}`, {
-    ...init,
-    credentials: "include",
-    headers: {
-      ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
-      ...(init?.headers ?? {})
-    }
-  });
+  let response: Response;
+
+  try {
+    response = await fetch(`/api/backend${path}`, {
+      ...init,
+      credentials: "include",
+      headers: {
+        ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+        ...(init?.headers ?? {})
+      }
+    });
+  } catch (error) {
+    console.error("backendFetch network error", error);
+    throw new Error(GENERIC_CONNECTION_ERROR);
+  }
 
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw Object.assign(new Error(data.message || "No fue posible completar la solicitud."), {
+    throw Object.assign(new Error(getUserSafeMessage(data.message || data.error, "No fue posible completar la solicitud.")), {
       status: response.status,
       data
     });

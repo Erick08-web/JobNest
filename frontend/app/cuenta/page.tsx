@@ -95,7 +95,7 @@ export default function AccountPage() {
         <div>
           <span className="sectionKicker"><Sparkles size={16} /> Identidad JobNest</span>
           <h1>{user ? `Tu perfil, ${user.nombres}.` : "Tu cuenta JobNest."}</h1>
-          <p>Administra tus datos personales, foto y acceso desde la nueva experiencia V2.</p>
+          <p>Administra tus datos personales, foto y acceso en JobNest.</p>
         </div>
         <aside>
           <div className="accountAvatar">{user?.foto_perfil ? <img src={`/api/backend${user.foto_perfil}`} alt="Foto de perfil" /> : <UserRound />}</div>

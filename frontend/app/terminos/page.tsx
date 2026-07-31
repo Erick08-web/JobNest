@@ -13,7 +13,7 @@ export default function InfoPage() {
           <h1>Términos y condiciones de JobNest</h1>
           <p>Reglas claras para que clientes y profesionales usen la plataforma con responsabilidad, respeto y confianza.</p>
         </div>
-        <aside><ShieldCheck /><strong>V2</strong><span>Experiencia clara y segura</span></aside>
+        <aside><ShieldCheck /><strong>JobNest</strong><span>Experiencia clara y segura</span></aside>
       </section>
       <section className="infoGrid">
         {cards.map(([title, text]) => (

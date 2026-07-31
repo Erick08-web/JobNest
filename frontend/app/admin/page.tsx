@@ -42,7 +42,7 @@ export default function AdminDashboardPage() {
           <div className="portfolioEmpty adminAccessBox">
             <ShieldCheck size={34} />
             <h3>{message}</h3>
-            <p>El panel administrador requiere una sesión con rol administrador en Flask.</p>
+            <p>El panel administrador requiere una sesión con permisos de administrador.</p>
             <Link href="/login">Iniciar sesión</Link>
           </div>
         </section>

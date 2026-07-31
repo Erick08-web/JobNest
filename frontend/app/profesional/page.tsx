@@ -74,7 +74,7 @@ export default function ProfessionalDashboardPage() {
         <div className="dashboardHeroCard proHero">
           <span className="sectionKicker">Dashboard profesional</span>
           <h1>{user ? `Hola, ${user.nombres}.` : "Tu operación profesional."}</h1>
-          <p>Solicitudes, agenda, mensajes e ingresos estimados desde la base de datos real.</p>
+          <p>Solicitudes, agenda, mensajes e ingresos estimados en un solo lugar.</p>
           <Link href="/publicar" className="primaryButton"><CalendarDays size={18} /> Publicar servicio</Link>
         </div>
         {message ? <div className="formAlert moduleAlert">{message}</div> : null}

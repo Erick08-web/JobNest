@@ -76,9 +76,9 @@ export default function RequestsPage() {
     <main className="modulePage requestsRealPage">
       <Link href={home} className="backLink"><ArrowLeft size={18} /> Volver</Link>
       <section className="moduleHero requestsHero">
-        <span className="sectionKicker">Solicitudes reales</span>
+        <span className="sectionKicker">Solicitudes</span>
         <h1>{user?.tipo_usuario === "prestador" ? "Gestiona clientes y trabajos entrantes." : "Da seguimiento a tus servicios solicitados."}</h1>
-        <p>Esta pantalla consulta las solicitudes guardadas en SQL Server usando la sesión actual.</p>
+        <p>Consulta tus solicitudes y mantén el seguimiento de cada servicio.</p>
       </section>
 
       <section className="requestStats">
