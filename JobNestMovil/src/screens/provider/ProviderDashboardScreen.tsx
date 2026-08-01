@@ -135,7 +135,7 @@ export function ProviderDashboardScreen({
         </View>
         <View style={styles.dashboardActionList}>
           <ProviderAction icon="add-circle-outline" title="Publicar" text="Crea una nueva publicación." onPress={onPublish} />
-          <ProviderAction icon="calendar-outline" title="Solicitudes" text="Atiende clientes interesados." badge={pendingRequests.length ? `${pendingRequests.length}` : undefined} onPress={onRequests} />
+          <ProviderAction icon="clipboard-outline" title="Solicitudes" text="Atiende clientes interesados." badge={pendingRequests.length ? `${pendingRequests.length}` : undefined} onPress={onRequests} />
           <ProviderAction icon="search-outline" title="Explorar" text="Consulta cómo se ve el marketplace." onPress={onExplore} />
         </View>
       </View>
@@ -166,7 +166,7 @@ export function ProviderDashboardScreen({
             </Pressable>
           ))
         ) : (
-          <EmptyState title="No tienes solicitudes nuevas" text="Mantén tus publicaciones actualizadas para recibir oportunidades." />
+          <EmptyState title="No tienes solicitudes nuevas" text="Mantén tus publicaciones actualizadas para recibir oportunidades." actionTitle="Ver publicaciones" onAction={onExplore} />
         )}
       </View>
 
@@ -194,7 +194,7 @@ export function ProviderDashboardScreen({
             </View>
           ))
         ) : (
-          <EmptyState title="Aún no tienes publicaciones activas" text="Publica tu primer servicio para aparecer en el marketplace." />
+          <EmptyState title="Aún no tienes publicaciones activas" text="Publica tu primer servicio para aparecer en el marketplace." actionTitle="Publicar servicio" onAction={onPublish} />
         )}
       </View>
     </View>

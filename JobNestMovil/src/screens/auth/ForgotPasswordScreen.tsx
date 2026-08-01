@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { Alert } from 'react-native';
+import { Alert, Text, View } from 'react-native';
 import { AuthCard, Field, GhostButton, PrimaryButton } from '../../components/ui';
 import { useAuth } from '../../context/AuthContext';
 import { requestPasswordReset } from '../../services/authService';
+import { styles } from '../../styles/theme';
 import type { FieldErrors } from '../../types/forms';
 import { cleanText, isEmail, mergeServerErrors } from '../../utils/validation';
 
@@ -40,7 +41,11 @@ export function ForgotPasswordScreen({ onBack, initialEmail }: { onBack: () => v
       <Field label="Correo" value={correo} onChangeText={(value) => { setCorreo(value); setErrors({}); }} keyboardType="email-address" error={errors.correo} />
       <PrimaryButton title={loading ? 'Enviando...' : 'Enviar instrucciones'} onPress={handleSubmit} disabled={loading} />
       <GhostButton title="Volver al inicio de sesión" onPress={onBack} />
-      {message ? <GhostButton title={message} onPress={() => undefined} disabled /> : null}
+      {message ? (
+        <View style={styles.notice}>
+          <Text style={styles.noticeText}>{message}</Text>
+        </View>
+      ) : null}
     </AuthCard>
   );
 }

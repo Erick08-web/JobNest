@@ -17,6 +17,7 @@ import { palette, spacing, styles } from '../../styles/theme';
 import type { MobileProfile, PortfolioWork, ProfileReviews, Publication, RequestItem } from '../../types/domain';
 import type { FieldErrors } from '../../types/forms';
 import { buildAbsoluteUrl, formatServicePrice, getRequestStatus, getTitle, normalizePublication } from '../../utils/formatters';
+import { notifySuccess, notifyWarning } from '../../utils/haptics';
 import { cleanText, isPhone, mergeServerErrors, validatePassword } from '../../utils/validation';
 
 type ProfileField = 'nombre' | 'apellido_paterno' | 'apellido_materno' | 'telefono';
@@ -119,6 +120,7 @@ export function ProfileScreen({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [sectionError, setSectionError] = useState('');
   const [success, setSuccess] = useState('');
   const [editing, setEditing] = useState(false);
   const [changingPassword, setChangingPassword] = useState(false);
@@ -156,6 +158,7 @@ export function ProfileScreen({
   const loadProfile = useCallback(async () => {
     setLoading(true);
     setError('');
+    setSectionError('');
     try {
       const nextProfile = await fetchMobileProfile(apiFetch);
       setProfile(nextProfile);
@@ -165,12 +168,28 @@ export function ProfileScreen({
         apellido_materno: nextProfile.apellido_materno,
         telefono: nextProfile.telefono ?? '',
       });
-      const [nextReviews, nextPortfolio] = await Promise.all([
-        fetchMyReviews(apiFetch),
-        isProvider ? fetchMyPortfolio(apiFetch) : Promise.resolve([]),
-      ]);
-      setReviews(nextReviews);
-      setPortfolio(nextPortfolio);
+      const nextSectionErrors: string[] = [];
+      const reviewsResult = await fetchMyReviews(apiFetch).catch(() => null);
+      if (reviewsResult) {
+        setReviews(reviewsResult);
+      } else {
+        setReviews({ promedio: null, total: 0, resenas: [] });
+        nextSectionErrors.push('No pudimos cargar tus reseñas.');
+      }
+
+      if (isProvider) {
+        const portfolioResult = await fetchMyPortfolio(apiFetch).catch(() => null);
+        if (portfolioResult) {
+          setPortfolio(portfolioResult);
+        } else {
+          setPortfolio([]);
+          nextSectionErrors.push('No pudimos cargar tu portafolio.');
+        }
+      } else {
+        setPortfolio([]);
+      }
+
+      setSectionError(nextSectionErrors.join(' '));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : 'No pudimos cargar tu perfil.');
     } finally {
@@ -194,6 +213,7 @@ export function ProfileScreen({
     if (!apellidoMaterno) nextErrors.apellido_materno = 'El apellido materno es obligatorio.';
     if (telefono && !isPhone(telefono)) nextErrors.telefono = 'Usa de 10 a 20 dígitos.';
     setProfileErrors(nextErrors);
+    if (Object.keys(nextErrors).length) notifyWarning();
     return { valid: !Object.keys(nextErrors).length, payload: { nombre, apellido_paterno: apellidoPaterno, apellido_materno: apellidoMaterno, telefono } };
   };
 
@@ -207,11 +227,13 @@ export function ProfileScreen({
       setProfile(response.perfil);
       setEditing(false);
       setSuccess('Perfil actualizado.');
+      notifySuccess();
       await refreshUser();
     } catch (saveError) {
       const parsed = mergeServerErrors<ProfileField>(saveError, 'No pudimos actualizar tu perfil.');
       setProfileErrors(parsed.errors);
       setError(parsed.message);
+      notifyWarning();
     } finally {
       setSaving(false);
     }
@@ -220,6 +242,7 @@ export function ProfileScreen({
   const pickPhoto = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
+      notifyWarning();
       Alert.alert('Permiso necesario', 'Permite acceder a tus fotos para actualizar tu avatar.');
       return;
     }
@@ -237,9 +260,11 @@ export function ProfileScreen({
       const response = await uploadProfilePhoto(apiFetch, result.assets[0]);
       setProfile(response.perfil);
       setSuccess('Foto actualizada.');
+      notifySuccess();
       await refreshUser();
     } catch (photoError) {
       setError(photoError instanceof Error ? photoError.message : 'No pudimos actualizar la foto.');
+      notifyWarning();
     } finally {
       setSaving(false);
     }
@@ -253,7 +278,10 @@ export function ProfileScreen({
     if (!confirmPassword) nextErrors.confirm_password = 'Confirma tu nueva contraseña.';
     else if (newPassword !== confirmPassword) nextErrors.confirm_password = 'Las contraseñas no coinciden.';
     setPasswordErrors(nextErrors);
-    if (Object.keys(nextErrors).length) return;
+    if (Object.keys(nextErrors).length) {
+      notifyWarning();
+      return;
+    }
 
     setSaving(true);
     try {
@@ -262,17 +290,20 @@ export function ProfileScreen({
       setNewPassword('');
       setConfirmPassword('');
       setChangingPassword(false);
+      notifySuccess();
       Alert.alert('Contraseña actualizada', response.message, [{ text: 'Iniciar sesión', onPress: () => { void logout(); } }]);
     } catch (passwordErrorResponse) {
       const parsed = mergeServerErrors<PasswordField>(passwordErrorResponse, 'No pudimos cambiar tu contraseña.');
       setPasswordErrors(parsed.errors);
       setError(parsed.message);
+      notifyWarning();
     } finally {
       setSaving(false);
     }
   };
 
   const confirmLogout = () => {
+    notifyWarning();
     Alert.alert('Cerrar sesión', '¿Deseas cerrar sesión?', [
       { text: 'Cancelar', style: 'cancel' },
       { text: 'Cerrar sesión', style: 'destructive', onPress: () => { void logout(); } },
@@ -320,6 +351,12 @@ export function ProfileScreen({
           {success ? (
             <View style={styles.notice}>
               <Text style={styles.noticeText}>{success}</Text>
+            </View>
+          ) : null}
+
+          {sectionError ? (
+            <View style={styles.notice}>
+              <Text style={styles.noticeText}>{sectionError}</Text>
             </View>
           ) : null}
 

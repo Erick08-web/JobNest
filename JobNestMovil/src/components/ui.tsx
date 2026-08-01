@@ -25,6 +25,8 @@ export function Field({
       <TextInput
         {...props}
         multiline={multiline}
+        accessibilityLabel={props.accessibilityLabel ?? label}
+        accessibilityHint={error}
         placeholderTextColor="#98a2b3"
         style={[styles.input, multiline && styles.textArea, error && styles.inputError, style]}
       />
@@ -35,7 +37,7 @@ export function Field({
 
 export function PrimaryButton({ title, onPress, disabled }: { title: string; onPress: () => void; disabled?: boolean }) {
   return (
-    <Pressable style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed, disabled && styles.disabled]} onPress={onPress} disabled={disabled}>
+    <Pressable style={({ pressed }) => [styles.primaryButton, pressed && styles.pressed, disabled && styles.disabled]} onPress={onPress} disabled={disabled} accessibilityRole="button" accessibilityLabel={title} accessibilityState={{ disabled: Boolean(disabled) }} hitSlop={8}>
       <Text style={styles.primaryButtonText}>{title}</Text>
     </Pressable>
   );
@@ -43,7 +45,7 @@ export function PrimaryButton({ title, onPress, disabled }: { title: string; onP
 
 export function GhostButton({ title, onPress, disabled }: { title: string; onPress: () => void; disabled?: boolean }) {
   return (
-    <Pressable style={({ pressed }) => [styles.ghostButton, pressed && styles.pressed, disabled && styles.disabled]} onPress={onPress} disabled={disabled}>
+    <Pressable style={({ pressed }) => [styles.ghostButton, pressed && styles.pressed, disabled && styles.disabled]} onPress={onPress} disabled={disabled} accessibilityRole="button" accessibilityLabel={title} accessibilityState={{ disabled: Boolean(disabled) }} hitSlop={8}>
       <Text style={styles.ghostButtonText}>{title}</Text>
     </Pressable>
   );
@@ -55,7 +57,7 @@ export function Segmented({ value, options, onChange }: { value: string; options
       {options.map((option) => {
         const active = option === value;
         return (
-          <Pressable key={option} style={[styles.segment, active && styles.segmentActive]} onPress={() => onChange(option)}>
+          <Pressable key={option} style={[styles.segment, active && styles.segmentActive]} onPress={() => onChange(option)} accessibilityRole="button" accessibilityState={{ selected: active }} accessibilityLabel={option} hitSlop={8}>
             <Text style={[styles.segmentText, active && styles.segmentTextActive]}>{option}</Text>
           </Pressable>
         );
@@ -83,7 +85,7 @@ export function StatCard({ label, value }: { label: string; value: string }) {
 
 export function ActionCard({ title, text, onPress }: { title: string; text: string; onPress: () => void }) {
   return (
-    <Pressable style={({ pressed }) => [styles.actionCard, pressed && styles.pressed]} onPress={onPress}>
+    <Pressable style={({ pressed }) => [styles.actionCard, pressed && styles.pressed]} onPress={onPress} accessibilityRole="button" accessibilityLabel={title} hitSlop={8}>
       <Text style={styles.cardTitle}>{title}</Text>
       <Text style={styles.bodyText}>{text}</Text>
       <Text style={styles.linkText}>Abrir</Text>
@@ -108,7 +110,7 @@ export function LoadingPill() {
   );
 }
 
-export function EmptyState({ title, text }: { title: string; text: string }) {
+export function EmptyState({ title, text, actionTitle, onAction }: { title: string; text: string; actionTitle?: string; onAction?: () => void }) {
   return (
     <View style={styles.emptyState}>
       <View style={styles.emptyIcon}>
@@ -116,6 +118,7 @@ export function EmptyState({ title, text }: { title: string; text: string }) {
       </View>
       <Text style={styles.emptyTitle}>{title}</Text>
       <Text style={styles.emptyText}>{text}</Text>
+      {actionTitle && onAction ? <GhostButton title={actionTitle} onPress={onAction} /> : null}
     </View>
   );
 }

@@ -124,7 +124,7 @@ export function ClientDashboardScreen({
         </View>
         <View style={styles.dashboardActionList}>
           <DashboardAction icon="search-outline" title="Explorar" text="Encuentra servicios publicados." onPress={onExplore} />
-          <DashboardAction icon="calendar-outline" title="Mis solicitudes" text="Revisa el avance de tus servicios." badge={activeRequests.length ? `${activeRequests.length}` : undefined} onPress={onRequests} />
+          <DashboardAction icon="clipboard-outline" title="Mis solicitudes" text="Revisa el avance de tus servicios." badge={activeRequests.length ? `${activeRequests.length}` : undefined} onPress={onRequests} />
           <DashboardAction icon="person-circle-outline" title="Perfil" text="Consulta tus datos de cuenta." onPress={onProfile} />
         </View>
       </View>
@@ -145,7 +145,7 @@ export function ClientDashboardScreen({
           activeRequests.slice(0, 3).map((request, index) => (
             <Pressable key={`${request.id ?? request.SolicitudId ?? index}`} style={({ pressed }) => [styles.compactListItem, pressed && styles.pressed]} onPress={onRequests} accessibilityRole="button" accessibilityLabel={`Ver solicitud ${getRequestTitle(request)}`}>
               <View style={styles.compactIcon}>
-                <Ionicons name="calendar-outline" size={18} style={styles.compactIconText} />
+                <Ionicons name="clipboard-outline" size={18} style={styles.compactIconText} />
               </View>
               <View style={styles.compactItemBody}>
                 <Text style={styles.compactItemTitle} numberOfLines={1}>{getRequestTitle(request)}</Text>
@@ -155,7 +155,7 @@ export function ClientDashboardScreen({
             </Pressable>
           ))
         ) : (
-          <EmptyState title="Aún no tienes solicitudes activas" text="Explora servicios y encuentra al profesional ideal." />
+          <EmptyState title="Aún no tienes solicitudes activas" text="Explora servicios y encuentra al profesional ideal." actionTitle="Explorar servicios" onAction={onExplore} />
         )}
       </View>
 
@@ -182,7 +182,7 @@ export function ClientDashboardScreen({
             </Pressable>
           ))
         ) : (
-          <EmptyState title="Aún no hay servicios disponibles" text="Vuelve pronto para descubrir nuevos profesionales." />
+          <EmptyState title="Aún no hay servicios disponibles" text="Vuelve pronto para descubrir nuevos profesionales." actionTitle="Actualizar" onAction={onExplore} />
         )}
       </View>
     </View>

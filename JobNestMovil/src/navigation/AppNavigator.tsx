@@ -32,6 +32,7 @@ import type {
   PublicStackParamList,
 } from '../types/navigation';
 import { normalizePublication } from '../utils/formatters';
+import { notifySelection } from '../utils/haptics';
 import { styles } from '../styles/theme';
 
 const PublicStack = createNativeStackNavigator<PublicStackParamList>();
@@ -371,7 +372,7 @@ const tabIcons: Record<string, { active: keyof typeof Ionicons.glyphMap; inactiv
   ClientHome: { active: 'home', inactive: 'home-outline' },
   ProviderHome: { active: 'home', inactive: 'home-outline' },
   ExploreTab: { active: 'search', inactive: 'search-outline' },
-  Requests: { active: 'calendar', inactive: 'calendar-outline' },
+  Requests: { active: 'clipboard', inactive: 'clipboard-outline' },
   Publish: { active: 'add-circle', inactive: 'add-circle-outline' },
   Profile: { active: 'person-circle', inactive: 'person-circle-outline' },
 };
@@ -394,6 +395,7 @@ function PremiumTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
             onPress={() => {
               const event = navigation.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
               if (!focused && !event.defaultPrevented) {
+                notifySelection();
                 navigation.navigate(route.name);
               }
             }}
@@ -457,6 +459,14 @@ function RequestsTabContent({
         role={currentUserType}
         loading={data.requestsLoading}
         error={data.requestsError}
+        onEmptyAction={() => {
+          if (currentUserType === 'Prestador') {
+            rootNavigation.navigate('MainTabs', { screen: 'Publish' });
+            return;
+          }
+          rootNavigation.navigate('MainTabs', { screen: 'ExploreTab' });
+          void data.loadPublications();
+        }}
       />
     </ScreenFrame>
   );

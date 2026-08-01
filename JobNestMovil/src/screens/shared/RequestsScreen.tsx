@@ -27,12 +27,14 @@ export function RequestsScreen({
   role,
   loading,
   error,
+  onEmptyAction,
 }: {
   requests: RequestItem[];
   onRefresh: () => void;
   role: UserType;
   loading: boolean;
   error: string;
+  onEmptyAction: () => void;
 }) {
   const insets = useSafeAreaInsets();
   const [selectedStatus, setSelectedStatus] = useState('Todas');
@@ -116,7 +118,7 @@ export function RequestsScreen({
         <View style={styles.requestCard}>
           <View style={styles.cardHeaderRow}>
             <View style={styles.compactIcon}>
-              <Ionicons name={role === 'Prestador' ? 'person-outline' : 'calendar-outline'} size={18} style={styles.compactIconText} />
+              <Ionicons name={role === 'Prestador' ? 'person-outline' : 'clipboard-outline'} size={18} style={styles.compactIconText} />
             </View>
             <View style={styles.compactItemBody}>
               <Text style={styles.requestTitle} numberOfLines={2}>{getRequestTitle(item)}</Text>
@@ -134,6 +136,8 @@ export function RequestsScreen({
           <EmptyState
             title={role === 'Prestador' ? 'Aún no recibes solicitudes' : 'No tienes solicitudes todavía'}
             text={role === 'Prestador' ? 'Mantén tus servicios activos y tu perfil completo.' : 'Explora servicios para comenzar.'}
+            actionTitle={role === 'Prestador' ? 'Publicar servicio' : 'Explorar servicios'}
+            onAction={onEmptyAction}
           />
           {selectedStatus !== 'Todas' ? <GhostButton title="Ver todas" onPress={() => setSelectedStatus('Todas')} /> : null}
         </View>

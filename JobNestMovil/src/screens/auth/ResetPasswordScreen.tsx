@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { Alert } from 'react-native';
+import { Alert, Text, View } from 'react-native';
 import { AuthCard, Field, GhostButton, PrimaryButton } from '../../components/ui';
 import { useAuth } from '../../context/AuthContext';
 import { resetPassword } from '../../services/authService';
+import { styles } from '../../styles/theme';
 import type { FieldErrors } from '../../types/forms';
 import { mergeServerErrors, validatePassword } from '../../utils/validation';
 
@@ -50,7 +51,11 @@ export function ResetPasswordScreen({ token: initialToken, onBack, onRequestNew 
       <PrimaryButton title={loading ? 'Guardando...' : 'Guardar contraseña'} onPress={handleSubmit} disabled={loading} />
       <GhostButton title="Solicitar un nuevo enlace" onPress={onRequestNew} />
       <GhostButton title="Volver al inicio de sesión" onPress={onBack} />
-      {message ? <GhostButton title={message} onPress={() => undefined} disabled /> : null}
+      {message ? (
+        <View style={styles.notice}>
+          <Text style={styles.noticeText}>{message}</Text>
+        </View>
+      ) : null}
     </AuthCard>
   );
 }

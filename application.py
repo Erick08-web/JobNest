@@ -2116,7 +2116,7 @@ def mobile_auth_login():
             record_auth_event('login', 'failed_admin_mobile', 'mobile')
             return jsonify({
                 'success': False,
-                'message': 'La administración debe realizarse desde JobNest V2 web.'
+                'message': 'La administración debe realizarse desde la plataforma web.'
             }), 403
 
         if password_necesita_rehash(resultado[1]):
@@ -2166,7 +2166,7 @@ def mobile_auth_me():
     if response is not None:
         return response, status
     if user['tipo_usuario'] == 'administrador':
-        return jsonify({'success': False, 'message': 'La administración debe realizarse desde JobNest V2 web.'}), 403
+        return jsonify({'success': False, 'message': 'La administración debe realizarse desde la plataforma web.'}), 403
     return jsonify({'success': True, 'user': mobile_user_response(user), 'role': user['tipo_usuario']}), 200
 
 
@@ -2389,6 +2389,8 @@ def mobile_update_profile_photo():
         cursor.execute("SELECT FotoPerfil FROM Personas WHERE UsuarioId = ?", (user['id'],))
         row = cursor.fetchone()
         if not row:
+            if saved_path and os.path.exists(saved_path):
+                os.remove(saved_path)
             return jsonify({'success': False, 'message': 'Perfil no encontrado.'}), 404
         previous_path = row[0]
         cursor.execute("UPDATE Personas SET FotoPerfil = ? WHERE UsuarioId = ?", (public_path, user['id']))
@@ -2509,7 +2511,7 @@ def mobile_auth_refresh():
             revoke_user_refresh_tokens(cursor, user_id)
             conn.commit()
             record_auth_event('refresh', 'failed_admin_mobile', 'mobile')
-            return jsonify({'success': False, 'message': 'La administración debe realizarse desde JobNest V2 web.'}), 403
+            return jsonify({'success': False, 'message': 'La administración debe realizarse desde la plataforma web.'}), 403
 
         record, error = validate_refresh_token_record(cursor, user_id, claims['jti'], refresh_token)
         if error:
