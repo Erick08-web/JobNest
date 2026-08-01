@@ -2,6 +2,7 @@ import * as SecureStore from 'expo-secure-store';
 
 const ACCESS_TOKEN_KEY = 'jobnest_mobile_access_token';
 const REFRESH_TOKEN_KEY = 'jobnest_mobile_refresh_token';
+const API_URL_KEY = 'jobnest_mobile_api_url';
 
 export type StoredTokens = {
   accessToken: string;
@@ -30,4 +31,12 @@ export async function clearTokens() {
     SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY),
     SecureStore.deleteItemAsync(REFRESH_TOKEN_KEY),
   ]);
+}
+
+export async function getStoredApiUrl() {
+  return SecureStore.getItemAsync(API_URL_KEY);
+}
+
+export async function saveApiUrl(value: string) {
+  await SecureStore.setItemAsync(API_URL_KEY, value);
 }

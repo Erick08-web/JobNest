@@ -8,9 +8,9 @@ import { cleanText, isEmail, mergeServerErrors } from '../../utils/validation';
 
 type ForgotField = 'correo';
 
-export function ForgotPasswordScreen({ onBack }: { onBack: () => void }) {
+export function ForgotPasswordScreen({ onBack, initialEmail }: { onBack: () => void; initialEmail?: string }) {
   const { apiFetch, loading } = useAuth();
-  const [correo, setCorreo] = useState('');
+  const [correo, setCorreo] = useState(initialEmail ?? '');
   const [message, setMessage] = useState('');
   const [errors, setErrors] = useState<FieldErrors<ForgotField>>({});
 

@@ -1,8 +1,8 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ApiOptions } from '../services/api';
-import { apiRequest, getDefaultApiUrl } from '../services/api';
+import { apiRequest, getDefaultApiUrl, normalizeApiBaseUrl } from '../services/api';
 import { fetchCurrentUser, login as loginRequest, logout as logoutRequest } from '../services/authService';
-import { clearTokens, getStoredTokens, saveTokens, type StoredTokens } from '../services/tokenStorage';
+import { clearTokens, getStoredApiUrl, getStoredTokens, saveApiUrl, saveTokens, type StoredTokens } from '../services/tokenStorage';
 import type { SessionUser, UserType } from '../types/domain';
 import { normalizeUserType } from '../utils/formatters';
 
@@ -19,6 +19,7 @@ type AuthContextValue = {
   apiMessage: string;
   setApiMessage: (value: string) => void;
   apiFetch: <T>(path: string, options?: ApiOptions) => Promise<T>;
+  refreshUser: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
 };
@@ -34,6 +35,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isRestoring, setIsRestoring] = useState(true);
   const [loading, setLoading] = useState(false);
   const [apiMessage, setApiMessage] = useState('');
+
+  const updateApiUrl = useCallback((value: string) => {
+    const normalized = normalizeApiBaseUrl(value);
+    setApiUrl(normalized);
+    void saveApiUrl(normalized);
+  }, []);
 
   const apiFetch = useCallback(
     <T,>(path: string, options: ApiOptions = {}) =>
@@ -53,6 +60,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     async function restoreSession() {
       setIsRestoring(true);
       try {
+        const storedApiUrl = await getStoredApiUrl();
+        const nextApiUrl = normalizeApiBaseUrl(storedApiUrl || DEFAULT_API_URL);
+        if (!mounted) return;
+        setApiUrl(nextApiUrl);
+        if (storedApiUrl !== nextApiUrl) {
+          await saveApiUrl(nextApiUrl);
+        }
+
         const storedTokens = await getStoredTokens();
         if (!mounted) return;
         if (!storedTokens) {
@@ -98,6 +113,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [apiFetch]);
 
+  const refreshUser = useCallback(async () => {
+    const currentUser = await fetchCurrentUser(apiFetch);
+    setUser(currentUser);
+  }, [apiFetch]);
+
   const logout = useCallback(async () => {
     const storedTokens = tokens ?? await getStoredTokens();
     try {
@@ -114,7 +134,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const value = useMemo(
     () => ({
       apiUrl,
-      setApiUrl,
+      setApiUrl: updateApiUrl,
       tokens,
       user,
       currentUserType: normalizeUserType(user?.tipo_usuario),
@@ -125,10 +145,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       apiMessage,
       setApiMessage,
       apiFetch,
+      refreshUser,
       login,
       logout,
     }),
-    [apiFetch, apiMessage, apiUrl, isRestoring, loading, login, logout, tokens, user],
+    [apiFetch, apiMessage, apiUrl, isRestoring, loading, login, logout, refreshUser, tokens, updateApiUrl, user],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

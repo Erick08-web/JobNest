@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { Alert, Text, View } from 'react-native';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import { Alert, Image, Text, View } from 'react-native';
 import { AuthCard, Badge, Field, PrimaryButton } from '../../components/ui';
 import { sendServiceRequest } from '../../services/requestService';
 import { styles } from '../../styles/theme';
 import type { Publication } from '../../types/domain';
-import { getPublicationId, money, normalizePublication } from '../../utils/formatters';
+import { buildAbsoluteUrl, formatServicePrice, getPublicationId, normalizePublication } from '../../utils/formatters';
 import { useAuth } from '../../context/AuthContext';
 import type { FieldErrors } from '../../types/forms';
 import { cleanText, isHour, isIsoDate, isTodayOrFuture, mergeServerErrors } from '../../utils/validation';
@@ -20,8 +21,12 @@ export function DetailScreen({
   onLoginRequired: () => void;
   onRequestSent: () => void;
 }) {
-  const { isLoggedIn, apiFetch, loading, setLoading } = useAuth();
+  const { isLoggedIn, apiFetch, apiUrl, loading, setLoading, user, currentUserType } = useAuth();
   const item = normalizePublication(publication);
+  const imageUrl = buildAbsoluteUrl(apiUrl, item.imagen_principal);
+  const price = formatServicePrice(item);
+  const isOwner = currentUserType === 'Prestador' && Boolean(user?.email && item.prestador_email && user.email.toLowerCase() === item.prestador_email.toLowerCase());
+  const [imageFailed, setImageFailed] = useState(false);
   const [serviceDate, setServiceDate] = useState('');
   const [serviceTime, setServiceTime] = useState('');
   const [serviceMessage, setServiceMessage] = useState('');
@@ -30,6 +35,10 @@ export function DetailScreen({
   const handleRequestService = async () => {
     if (!isLoggedIn) {
       onLoginRequired();
+      return;
+    }
+    if (isOwner) {
+      Alert.alert('Publicación propia', 'No puedes solicitar un servicio publicado por tu propia cuenta.');
       return;
     }
 
@@ -79,32 +88,43 @@ export function DetailScreen({
   return (
     <View>
       <View style={styles.profileHero}>
-        <View style={styles.avatarLarge}>
-          <Text style={styles.avatarText}>{String(item.nombre_prestador ?? 'JN').slice(0, 2).toUpperCase()}</Text>
+        <View style={styles.cardImage}>
+          {imageUrl && !imageFailed ? (
+            <Image source={{ uri: imageUrl }} style={styles.cardImageFill} resizeMode="cover" onError={() => setImageFailed(true)} />
+          ) : (
+            <View style={styles.imagePlaceholder}>
+              <Ionicons name="briefcase-outline" size={30} style={styles.imagePlaceholderIcon} />
+              <Text style={styles.imagePlaceholderText}>Servicio JobNest</Text>
+            </View>
+          )}
         </View>
-        <Text style={styles.profileName}>{item.nombre_prestador || 'Prestador no especificado'}</Text>
-        <Text style={styles.profileRole}>{item.titulo}</Text>
+        <Text style={styles.profileName}>{item.titulo}</Text>
+        {item.nombre_prestador ? <Text style={styles.profileRole}>{item.nombre_prestador}</Text> : null}
         <View style={styles.metaRow}>
-          <Badge text={`${item.promedio_calificacion} rating`} />
-          <Badge text={item.ubicacion ?? 'Ubicacion'} />
-          <Badge text={item.disponibilidad ?? 'Disponible'} />
+          {item.categoria ? <Badge text={item.categoria} /> : null}
+          {item.ubicacion ? <Badge text={item.ubicacion} /> : null}
+          {item.disponibilidad ? <Badge text={item.disponibilidad} /> : null}
+          {item.promedio_calificacion ? <Badge text={`${item.promedio_calificacion}`} /> : null}
         </View>
       </View>
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Sobre el servicio</Text>
         <Text style={styles.bodyText}>{item.descripcion}</Text>
-        <View style={styles.pricePanel}>
-          <Text style={styles.priceLabel}>Tarifa estimada</Text>
-          <Text style={styles.priceText}>{money(item.salario)} / hora</Text>
-        </View>
+        {item.habilidades ? <View style={styles.metaRow}>{item.habilidades.split(',').slice(0, 5).map((skill) => <Badge key={skill.trim()} text={skill.trim()} />)}</View> : null}
+        {price ? (
+          <View style={styles.pricePanel}>
+            <Text style={styles.priceLabel}>Precio</Text>
+            <Text style={styles.priceText}>{price}</Text>
+          </View>
+        ) : null}
       </View>
 
-      <AuthCard title="Solicitar servicio" subtitle="El profesional recibira fecha, hora y mensaje.">
+      <AuthCard title={isOwner ? 'Tu publicación' : 'Solicitar servicio'} subtitle={isOwner ? 'Puedes revisar esta publicación como prestador.' : 'El profesional recibira fecha, hora y mensaje.'}>
         <Field label="Fecha" value={serviceDate} onChangeText={(value) => { setServiceDate(value); setErrors((current) => ({ ...current, fecha_servicio: undefined })); }} placeholder="YYYY-MM-DD" error={errors.fecha_servicio} />
         <Field label="Hora" value={serviceTime} onChangeText={(value) => { setServiceTime(value); setErrors((current) => ({ ...current, hora_servicio: undefined })); }} placeholder="HH:MM" error={errors.hora_servicio} />
         <Field label="Mensaje" value={serviceMessage} onChangeText={(value) => { setServiceMessage(value); setErrors((current) => ({ ...current, mensaje: undefined })); }} multiline error={errors.mensaje} />
-        <PrimaryButton title="Enviar solicitud" onPress={handleRequestService} disabled={loading} />
+        <PrimaryButton title={isOwner ? 'Publicación propia' : 'Enviar solicitud'} onPress={handleRequestService} disabled={loading || isOwner} />
       </AuthCard>
     </View>
   );

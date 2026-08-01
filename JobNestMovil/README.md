@@ -11,23 +11,15 @@ npm start
 
 Escanea el QR con Expo Go.
 
-## Backend
+## Conexión
 
-Para que Expo Go pueda conectarse desde el telefono, el backend Flask debe correr en la red local:
-
-```bash
-cd /Users/erick/Desktop/JobNest
-source .venv/bin/activate
-flask --app application run --host 0.0.0.0 --port 5000 --debug
-```
-
-En la app movil abre `API` y coloca la URL con la IP local de tu Mac, por ejemplo:
+La app usa por defecto la plataforma oficial de JobNest:
 
 ```text
-http://192.168.0.108:5000
+https://jobnestservices.com/api/backend
 ```
 
-No uses `localhost` en Expo Go, porque en el telefono `localhost` apunta al telefono, no a tu Mac.
+La pantalla de ajustes conserva el campo de conexión solo para soporte. Si detecta una dirección anterior o no segura, vuelve automáticamente a la dirección oficial.
 
 ## Pantallas incluidas
 
@@ -41,4 +33,22 @@ No uses `localhost` en Expo Go, porque en el telefono `localhost` apunta al tele
 - Dashboard de prestador
 - Publicar servicio
 - Solicitudes
-- Ajustes de API
+- Perfil editable
+- Foto de perfil
+- Cambio de contraseña
+- Portafolio de prestador
+- Reseñas del perfil
+- Ajustes avanzados de conexión
+
+## Perfil móvil
+
+El perfil usa endpoints JWT móviles, no sesiones web:
+
+- `GET /api/mobile/perfil`: obtiene datos completos del usuario autenticado.
+- `PATCH /api/mobile/perfil`: actualiza nombre, apellidos y teléfono.
+- `POST /api/mobile/perfil/foto`: sube foto con `multipart/form-data` en el campo `foto`.
+- `POST /api/mobile/auth/change-password`: cambia contraseña validando la contraseña actual.
+- `GET /api/mobile/mi-portafolio`: lista trabajos del portafolio del prestador autenticado.
+- `GET /api/mobile/mi-perfil/resenas`: obtiene promedio, total y reseñas del perfil autenticado.
+
+La foto se selecciona con permisos de galería mediante Expo ImagePicker. La contraseña no se guarda localmente; al cambiarla, el backend revoca las sesiones móviles y la app pide iniciar sesión otra vez.

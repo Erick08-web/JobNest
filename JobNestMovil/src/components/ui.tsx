@@ -111,8 +111,26 @@ export function LoadingPill() {
 export function EmptyState({ title, text }: { title: string; text: string }) {
   return (
     <View style={styles.emptyState}>
+      <View style={styles.emptyIcon}>
+        <Text style={styles.emptyIconText}>⌁</Text>
+      </View>
       <Text style={styles.emptyTitle}>{title}</Text>
       <Text style={styles.emptyText}>{text}</Text>
+    </View>
+  );
+}
+
+export function SkeletonList({ count = 3 }: { count?: number }) {
+  return (
+    <View>
+      {Array.from({ length: count }).map((_, index) => (
+        <View style={styles.skeletonCard} key={index}>
+          <View style={styles.skeletonMedia} />
+          <View style={[styles.skeletonBlock, { width: '70%' }]} />
+          <View style={[styles.skeletonBlock, { width: '92%' }]} />
+          <View style={[styles.skeletonBlock, { width: '46%' }]} />
+        </View>
+      ))}
     </View>
   );
 }

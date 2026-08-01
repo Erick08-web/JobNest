@@ -30,4 +30,5 @@ export type AuthenticatedStackParamList = {
   MainTabs: { screen?: keyof ClientTabParamList | keyof ProviderTabParamList } | undefined;
   Detail: { publication: Publication };
   Settings: undefined;
+  ForgotPassword: undefined;
 };

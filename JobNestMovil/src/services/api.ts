@@ -1,4 +1,3 @@
-import { NativeModules } from 'react-native';
 import { clearTokens, getStoredTokens, saveTokens, type StoredTokens } from './tokenStorage';
 
 export type ApiOptions = RequestInit & {
@@ -18,7 +17,9 @@ type ParsedResponse<T> = {
 };
 
 const GENERIC_ACTION_ERROR = 'No pudimos completar la acción. Inténtalo nuevamente.';
-const GENERIC_CONNECTION_ERROR = 'No pudimos conectarnos. Revisa tu conexión e inténtalo de nuevo.';
+const GENERIC_CONNECTION_ERROR = 'No fue posible conectarnos en este momento. Inténtalo nuevamente.';
+const API_BACKEND_PREFIX = '/api/backend';
+export const OFFICIAL_API_URL = 'https://jobnestservices.com/api/backend';
 const TECHNICAL_ERROR_PATTERNS = [
   /network request failed/i,
   /failed to fetch/i,
@@ -32,6 +33,9 @@ const TECHNICAL_ERROR_PATTERNS = [
   /database/i,
   /servidor/i,
 ];
+
+const UNSAFE_HOSTS = new Set(['localhost', '127.0.0.1', '159.54.154.70']);
+const UNSAFE_PORTS = new Set(['5000', '5001']);
 
 export function getUserSafeMessage(message: unknown, fallback = GENERIC_ACTION_ERROR) {
   if (typeof message !== 'string' || !message.trim()) return fallback;
@@ -52,32 +56,53 @@ export class ApiError extends Error {
   }
 }
 
+function isPrivateIp(hostname: string) {
+  return (
+    /^10\./.test(hostname) ||
+    /^192\.168\./.test(hostname) ||
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname)
+  );
+}
+
+export function normalizeApiBaseUrl(value?: string | null) {
+  const candidate = (value || '').trim().replace(/\/+$/, '');
+  if (!candidate) return OFFICIAL_API_URL;
+
+  try {
+    const parsed = new URL(candidate);
+    const hostname = parsed.hostname.toLowerCase();
+    const isUnsafe =
+      parsed.protocol !== 'https:' ||
+      UNSAFE_HOSTS.has(hostname) ||
+      isPrivateIp(hostname) ||
+      UNSAFE_PORTS.has(parsed.port);
+
+    if (isUnsafe) return OFFICIAL_API_URL;
+
+    const normalizedPath = parsed.pathname.replace(/\/+$/, '');
+    const basePath = normalizedPath.endsWith(API_BACKEND_PREFIX)
+      ? normalizedPath
+      : `${normalizedPath}${API_BACKEND_PREFIX}`;
+    parsed.pathname = basePath.replace(/\/api\/backend\/api\/backend/g, API_BACKEND_PREFIX);
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString().replace(/\/+$/, '');
+  } catch {
+    return OFFICIAL_API_URL;
+  }
+}
+
 export function getDefaultApiUrl() {
-  const configuredUrl = process.env.EXPO_PUBLIC_API_URL;
+  return normalizeApiBaseUrl(process.env.EXPO_PUBLIC_API_URL);
+}
 
-  if (configuredUrl) {
-    return configuredUrl.replace(/\/$/, '');
+export function normalizeApiPath(path: string) {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  if (normalizedPath === API_BACKEND_PREFIX) return '';
+  if (normalizedPath.startsWith(`${API_BACKEND_PREFIX}/`)) {
+    return normalizedPath.slice(API_BACKEND_PREFIX.length);
   }
-
-  const scriptUrl = NativeModules.SourceCode?.scriptURL;
-
-  if (typeof scriptUrl === 'string') {
-    try {
-      const { hostname } = new URL(scriptUrl);
-
-      if (hostname) {
-        return `http://${hostname}:5001`;
-      }
-    } catch {
-      const host = scriptUrl.match(/\/\/([^/:]+)/)?.[1];
-
-      if (host) {
-        return `http://${host}:5001`;
-      }
-    }
-  }
-
-  return 'http://localhost:5001';
+  return normalizedPath;
 }
 
 export async function apiRequest<T>(
@@ -96,8 +121,8 @@ async function requestWithJwt<T>(
   handlers: ApiHandlers,
   allowRefresh: boolean,
 ) {
-  const normalizedBase = apiUrl.replace(/\/$/, '');
-  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  const normalizedBase = normalizeApiBaseUrl(apiUrl);
+  const normalizedPath = normalizeApiPath(path);
   const shouldUseAuth = options.auth !== false;
   const tokens = shouldUseAuth ? await getStoredTokens() : null;
   const headers: Record<string, string> = {
@@ -116,8 +141,7 @@ async function requestWithJwt<T>(
       ...options,
       headers,
     });
-  } catch (error) {
-    console.error('apiRequest network error', error);
+  } catch {
     throw new Error(GENERIC_CONNECTION_ERROR);
   }
 
@@ -182,15 +206,14 @@ async function performRefresh(apiUrl: string, handlers: ApiHandlers) {
   let response: Response;
 
   try {
-    response = await fetch(`${apiUrl.replace(/\/$/, '')}/api/mobile/auth/refresh`, {
+    response = await fetch(`${normalizeApiBaseUrl(apiUrl)}/api/mobile/auth/refresh`, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
         Authorization: `Bearer ${tokens.refreshToken}`,
       },
     });
-  } catch (error) {
-    console.error('refresh token network error', error);
+  } catch {
     throw new Error(GENERIC_CONNECTION_ERROR);
   }
   const parsed = await parseResponse<{

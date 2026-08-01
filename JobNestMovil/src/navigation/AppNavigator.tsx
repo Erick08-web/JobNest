@@ -1,8 +1,10 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { NavigationContainer, type LinkingOptions } from '@react-navigation/native';
-import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { createBottomTabNavigator, type BottomTabBarProps } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack';
-import { View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { ScreenFrame } from '../components/ScreenFrame';
 import { LoadingPill } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
@@ -30,6 +32,7 @@ import type {
   PublicStackParamList,
 } from '../types/navigation';
 import { normalizePublication } from '../utils/formatters';
+import { styles } from '../styles/theme';
 
 const PublicStack = createNativeStackNavigator<PublicStackParamList>();
 const AuthStack = createNativeStackNavigator<AuthenticatedStackParamList>();
@@ -100,6 +103,7 @@ function AuthenticatedNavigator() {
       <AuthStack.Screen name="MainTabs" component={RoleTabsRoute} />
       <AuthStack.Screen name="Detail" component={AuthenticatedDetailRoute} />
       <AuthStack.Screen name="Settings" component={AuthenticatedSettingsRoute} />
+      <AuthStack.Screen name="ForgotPassword" component={AuthenticatedForgotPasswordRoute} />
     </AuthStack.Navigator>
   );
 }
@@ -108,7 +112,7 @@ function PublicHomeRoute({ navigation }: PublicProps<'Home'>) {
   const { apiUrl, categories, publications, openPublication, loadPublications } = useMobileData();
 
   return (
-    <ScreenFrame onHome={() => navigation.navigate('Home')} onSettings={() => navigation.navigate('Settings')}>
+    <ScreenFrame onHome={() => navigation.navigate('Home')} onSettings={() => navigation.navigate('Settings')} scroll={false}>
       <HomeScreen
         onLogin={() => navigation.navigate('Login')}
         onRegister={() => navigation.navigate('Register')}
@@ -179,7 +183,7 @@ function PublicExploreRoute({ navigation }: PublicProps<'Explore'>) {
   } = useMobileData();
 
   return (
-    <ScreenFrame onHome={() => navigation.navigate('Home')} onSettings={() => navigation.navigate('Settings')}>
+    <ScreenFrame onHome={() => navigation.navigate('Home')} onSettings={() => navigation.navigate('Settings')} scroll={false}>
       <ExploreScreen
         search={search}
         onSearch={setSearch}
@@ -223,6 +227,16 @@ function AuthenticatedSettingsRoute({ navigation }: AuthProps<'Settings'>) {
   );
 }
 
+function AuthenticatedForgotPasswordRoute({ navigation }: AuthProps<'ForgotPassword'>) {
+  const { user } = useAuth();
+
+  return (
+    <ScreenFrame onHome={() => navigation.navigate('MainTabs')} onSettings={() => navigation.navigate('Settings')}>
+      <ForgotPasswordScreen initialEmail={user?.email} onBack={() => navigation.navigate('MainTabs')} />
+    </ScreenFrame>
+  );
+}
+
 function AuthenticatedDetailRoute({ navigation, route }: AuthProps<'Detail'>) {
   return (
     <ScreenFrame onHome={() => navigation.navigate('MainTabs')} onSettings={() => navigation.navigate('Settings')}>
@@ -253,7 +267,10 @@ function ClientTabsNavigator({
   rootNavigation: AuthProps<'MainTabs'>['navigation'];
   data: ReturnType<typeof useMobileData>;
 }) {
-  const commonScreenOptions = { headerShown: false };
+  const commonScreenOptions = {
+    headerShown: false,
+    tabBar: (props: BottomTabBarProps) => <PremiumTabBar {...props} />,
+  };
 
   return (
     <ClientTabs.Navigator screenOptions={commonScreenOptions}>
@@ -261,6 +278,9 @@ function ClientTabsNavigator({
         {() => (
           <ScreenFrame onHome={() => rootNavigation.navigate('MainTabs')} onSettings={() => rootNavigation.navigate('Settings')}>
             <ClientDashboardScreen
+              requests={data.requests}
+              publications={data.publications}
+              loading={data.requestsLoading || data.publicationsLoading}
               onExplore={() => {
                 rootNavigation.navigate('MainTabs', { screen: 'ExploreTab' });
                 void data.loadPublications();
@@ -269,6 +289,7 @@ function ClientTabsNavigator({
                 rootNavigation.navigate('MainTabs', { screen: 'Requests' });
                 void data.loadRequests();
               }}
+              onProfile={() => rootNavigation.navigate('MainTabs', { screen: 'Profile' })}
             />
           </ScreenFrame>
         )}
@@ -280,7 +301,7 @@ function ClientTabsNavigator({
         {() => <RequestsTabContent rootNavigation={rootNavigation} data={data} />}
       </ClientTabs.Screen>
       <ClientTabs.Screen name="Profile" options={{ title: 'Perfil' }}>
-        {() => <ProfileTabContent rootNavigation={rootNavigation} />}
+        {() => <ProfileTabContent rootNavigation={rootNavigation} data={data} />}
       </ClientTabs.Screen>
     </ClientTabs.Navigator>
   );
@@ -293,7 +314,10 @@ function ProviderTabsNavigator({
   rootNavigation: AuthProps<'MainTabs'>['navigation'];
   data: ReturnType<typeof useMobileData>;
 }) {
-  const commonScreenOptions = { headerShown: false };
+  const commonScreenOptions = {
+    headerShown: false,
+    tabBar: (props: BottomTabBarProps) => <PremiumTabBar {...props} />,
+  };
 
   return (
     <ProviderTabs.Navigator screenOptions={commonScreenOptions}>
@@ -301,6 +325,9 @@ function ProviderTabsNavigator({
         {() => (
           <ScreenFrame onHome={() => rootNavigation.navigate('MainTabs')} onSettings={() => rootNavigation.navigate('Settings')}>
             <ProviderDashboardScreen
+              requests={data.requests}
+              publications={data.publications}
+              loading={data.requestsLoading || data.publicationsLoading}
               onExplore={() => {
                 rootNavigation.navigate('MainTabs', { screen: 'ExploreTab' });
                 void data.loadPublications();
@@ -334,9 +361,58 @@ function ProviderTabsNavigator({
         )}
       </ProviderTabs.Screen>
       <ProviderTabs.Screen name="Profile" options={{ title: 'Perfil' }}>
-        {() => <ProfileTabContent rootNavigation={rootNavigation} />}
+        {() => <ProfileTabContent rootNavigation={rootNavigation} data={data} />}
       </ProviderTabs.Screen>
     </ProviderTabs.Navigator>
+  );
+}
+
+const tabIcons: Record<string, { active: keyof typeof Ionicons.glyphMap; inactive: keyof typeof Ionicons.glyphMap }> = {
+  ClientHome: { active: 'home', inactive: 'home-outline' },
+  ProviderHome: { active: 'home', inactive: 'home-outline' },
+  ExploreTab: { active: 'search', inactive: 'search-outline' },
+  Requests: { active: 'calendar', inactive: 'calendar-outline' },
+  Publish: { active: 'add-circle', inactive: 'add-circle-outline' },
+  Profile: { active: 'person-circle', inactive: 'person-circle-outline' },
+};
+
+function PremiumTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
+  const insets = useSafeAreaInsets();
+
+  return (
+    <View style={[styles.tabBarShell, { bottom: Math.max(insets.bottom, 10), height: 72 + Math.max(insets.bottom, 10) }]}>
+      {state.routes.map((route, index) => {
+        const focused = state.index === index;
+        const { options } = descriptors[route.key];
+        const label = typeof options.title === 'string' ? options.title : route.name;
+
+        return (
+          <Pressable
+            key={route.key}
+            accessibilityRole="button"
+            accessibilityState={focused ? { selected: true } : {}}
+            onPress={() => {
+              const event = navigation.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
+              if (!focused && !event.defaultPrevented) {
+                navigation.navigate(route.name);
+              }
+            }}
+            style={({ pressed }) => [
+              styles.tabButton,
+              focused && styles.tabButtonActive,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Ionicons
+              name={(focused ? tabIcons[route.name]?.active : tabIcons[route.name]?.inactive) ?? 'ellipse-outline'}
+              size={20}
+              style={[styles.tabIcon, focused && styles.tabIconActive]}
+            />
+            <Text style={[styles.tabLabel, focused && styles.tabLabelActive]} numberOfLines={1}>{label}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
   );
 }
 
@@ -348,7 +424,7 @@ function ExploreTabContent({
   data: ReturnType<typeof useMobileData>;
 }) {
   return (
-    <ScreenFrame onHome={() => rootNavigation.navigate('MainTabs')} onSettings={() => rootNavigation.navigate('Settings')}>
+    <ScreenFrame onHome={() => rootNavigation.navigate('MainTabs')} onSettings={() => rootNavigation.navigate('Settings')} scroll={false}>
       <ExploreScreen
         search={data.search}
         onSearch={data.setSearch}
@@ -374,7 +450,7 @@ function RequestsTabContent({
   const { currentUserType } = useAuth();
 
   return (
-    <ScreenFrame onHome={() => rootNavigation.navigate('MainTabs')} onSettings={() => rootNavigation.navigate('Settings')}>
+    <ScreenFrame onHome={() => rootNavigation.navigate('MainTabs')} onSettings={() => rootNavigation.navigate('Settings')} scroll={false}>
       <RequestsScreen
         requests={data.requests}
         onRefresh={data.loadRequests}
@@ -386,10 +462,32 @@ function RequestsTabContent({
   );
 }
 
-function ProfileTabContent({ rootNavigation }: { rootNavigation: AuthProps<'MainTabs'>['navigation'] }) {
+function ProfileTabContent({
+  rootNavigation,
+  data,
+}: {
+  rootNavigation: AuthProps<'MainTabs'>['navigation'];
+  data: ReturnType<typeof useMobileData>;
+}) {
+  const { currentUserType } = useAuth();
+
   return (
-    <ScreenFrame onHome={() => rootNavigation.navigate('MainTabs')} onSettings={() => rootNavigation.navigate('Settings')}>
-      <ProfileScreen onSettings={() => rootNavigation.navigate('Settings')} />
+    <ScreenFrame onHome={() => rootNavigation.navigate('MainTabs')} onSettings={() => rootNavigation.navigate('Settings')} scroll={false}>
+      <ProfileScreen
+        publications={data.publications}
+        requests={data.requests}
+        apiUrl={data.apiUrl}
+        onSettings={() => rootNavigation.navigate('Settings')}
+        onExplore={() => {
+          rootNavigation.navigate('MainTabs', { screen: 'ExploreTab' });
+          void data.loadPublications();
+        }}
+        onRequests={() => {
+          rootNavigation.navigate('MainTabs', { screen: 'Requests' });
+          void data.loadRequests();
+        }}
+        onPublish={currentUserType === 'Prestador' ? () => rootNavigation.navigate('MainTabs', { screen: 'Publish' }) : undefined}
+      />
     </ScreenFrame>
   );
 }
@@ -421,6 +519,10 @@ function useCreateMobileData() {
     void loadPublications();
     void loadCategories();
   }, []);
+
+  useEffect(() => {
+    void loadRequests();
+  }, [currentUserType]);
 
   const filteredPublications = useMemo(() => {
     const q = search.trim().toLowerCase();

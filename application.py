@@ -2170,6 +2170,316 @@ def mobile_auth_me():
     return jsonify({'success': True, 'user': mobile_user_response(user), 'role': user['tipo_usuario']}), 200
 
 
+def mobile_profile_payload(cursor, user_id):
+    cursor.execute("""
+        SELECT u.id, u.Email, u.Activo, u.CreadoEn,
+               p.Nombre, p.ApellidoP, p.ApellidoM, p.Telefono, p.FotoPerfil,
+               pr.Verificado, pr.RatingPromedio, pr.TotalResenas
+        FROM Usuarios u
+        LEFT JOIN Personas p ON u.id = p.UsuarioId
+        LEFT JOIN Prestadores pr ON u.id = pr.UsuarioId
+        WHERE u.id = ?
+    """, (user_id,))
+    row = cursor.fetchone()
+    if not row:
+        return None
+
+    role = get_user_type(cursor, row[0], row[1])
+    profile = {
+        'usuario_id': row[0],
+        'email': row[1],
+        'rol': role,
+        'nombre': row[4] or '',
+        'apellido_paterno': row[5] or '',
+        'apellido_materno': row[6] or '',
+        'telefono': descifrar_dato(row[7]) or '',
+        'foto_perfil': row[8],
+        'fecha_registro': row[3].strftime('%d/%m/%Y') if row[3] else '',
+        'activo': bool(row[2]),
+    }
+    if role == 'prestador':
+        profile['profesional'] = {
+            'verificado': bool(row[9]) if row[9] is not None else False,
+            'rating_promedio': float(row[10]) if row[10] is not None else None,
+            'total_resenas': int(row[11] or 0),
+        }
+    return profile
+
+
+def validate_mobile_profile_payload(data):
+    allowed_fields = {'nombre', 'apellido_paterno', 'apellido_materno', 'telefono'}
+    blocked_fields = {'usuario_id', 'id', 'email', 'rol', 'tipo_usuario', 'activo', 'password', 'password_hash', 'PasswordHash'}
+    errors = reject_unknown_fields(data, allowed_fields, blocked_fields)
+    cleaned = {}
+
+    if 'nombre' in data:
+        value = clean_text(data.get('nombre'))
+        if not value:
+            errors['nombre'] = 'El nombre es obligatorio.'
+        elif len(value) > 100 or not is_valid_person_name_field(value):
+            errors['nombre'] = 'El nombre solo debe contener letras, espacios y acentos.'
+        else:
+            cleaned['Nombre'] = ' '.join(word.capitalize() for word in value.split())
+
+    for api_field, db_field, label in (
+        ('apellido_paterno', 'ApellidoP', 'apellido paterno'),
+        ('apellido_materno', 'ApellidoM', 'apellido materno'),
+    ):
+        if api_field in data:
+            value = clean_text(data.get(api_field))
+            if not value:
+                errors[api_field] = f'El {label} es obligatorio.'
+            elif len(value) > 100 or not is_valid_person_name_field(value, is_apellido=True):
+                errors[api_field] = f'El {label} solo debe contener letras, espacios y acentos.'
+            else:
+                cleaned[db_field] = ' '.join(word.capitalize() for word in value.split())
+
+    if 'telefono' in data:
+        phone = clean_text(data.get('telefono'))
+        if phone and not is_valid_phone_number(phone):
+            errors['telefono'] = 'El teléfono debe contener entre 10 y 20 dígitos.'
+        else:
+            cleaned['Telefono'] = cifrar_dato(phone) if phone else None
+
+    return cleaned, errors
+
+
+def validate_mobile_profile_photo(file_storage):
+    if not file_storage or file_storage.filename == '':
+        return False, 'Selecciona una foto válida.', None
+
+    safe_name = secure_filename(file_storage.filename)
+    extension = safe_name.rsplit('.', 1)[1].lower() if '.' in safe_name else ''
+    if extension == 'jpeg':
+        extension = 'jpg'
+    if extension not in {'jpg', 'png', 'webp'}:
+        return False, 'Solo se permiten imágenes JPEG, PNG o WebP.', None
+
+    file_storage.stream.seek(0, os.SEEK_END)
+    size = file_storage.stream.tell()
+    file_storage.stream.seek(0)
+    if size <= 0:
+        return False, 'La foto está vacía.', None
+    if size > app.config['MAX_CONTENT_LENGTH']:
+        return False, 'La foto debe pesar máximo 2 MB.', None
+
+    header = file_storage.stream.read(32)
+    file_storage.stream.seek(0)
+    mime_real, extension_real = detectar_tipo_imagen(header)
+    if not mime_real:
+        return False, 'El archivo no parece ser una imagen válida.', None
+    if extension_real != extension:
+        return False, 'La extensión no coincide con el contenido de la imagen.', None
+    if (file_storage.mimetype or '').lower() not in {'', 'image/jpeg', 'image/png', 'image/webp'}:
+        return False, 'El tipo de archivo no está permitido.', None
+
+    return True, '', {'extension': extension_real, 'size': size}
+
+
+def maybe_remove_previous_profile_photo(cursor, user_id, previous_path):
+    if not previous_path or not previous_path.startswith('/static/uploads/perfiles/'):
+        return
+    cursor.execute("SELECT COUNT(*) FROM Personas WHERE FotoPerfil = ? AND UsuarioId <> ?", (previous_path, user_id))
+    if cursor.fetchone()[0]:
+        return
+    absolute = os.path.join(app.root_path, previous_path.lstrip('/'))
+    try:
+        if os.path.isfile(absolute):
+            os.remove(absolute)
+    except OSError:
+        logger.warning('profile_photo_cleanup_failed', extra={'event': 'profile.photo.cleanup_failed'})
+
+
+@app.route('/api/mobile/perfil', methods=['GET'])
+@jwt_required()
+def mobile_get_profile():
+    user, response, status = load_mobile_jwt_user()
+    if response is not None:
+        return response, status
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        profile = mobile_profile_payload(cursor, user['id'])
+        if not profile:
+            return jsonify({'success': False, 'message': 'Perfil no encontrado.'}), 404
+        return jsonify({'success': True, 'perfil': profile}), 200
+    except pyodbc.Error as ex:
+        print(f"Error de base de datos al obtener perfil móvil (sqlstate: {ex.args[0]}): {ex}")
+        return jsonify({'success': False, 'message': 'No fue posible cargar el perfil.'}), 500
+    except Exception as e:
+        print(f"Error inesperado al obtener perfil móvil: {e}")
+        return jsonify({'success': False, 'message': 'Ocurrió un error inesperado.'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/mobile/perfil', methods=['PATCH', 'PUT'])
+@jwt_required()
+def mobile_update_profile():
+    user, response, status = load_mobile_jwt_user()
+    if response is not None:
+        return response, status
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return validation_response({'perfil': 'Envía un objeto válido.'})
+    updates, errors = validate_mobile_profile_payload(data)
+    if errors:
+        return validation_response(errors)
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT UsuarioId FROM Personas WHERE UsuarioId = ?", (user['id'],))
+        if not cursor.fetchone():
+            return jsonify({'success': False, 'message': 'Perfil no encontrado.'}), 404
+        if updates:
+            assignments = ', '.join(f"{field} = ?" for field in updates)
+            values = list(updates.values()) + [user['id']]
+            cursor.execute(f"UPDATE Personas SET {assignments} WHERE UsuarioId = ?", values)
+            audit_event(cursor, 'perfil_actualizado_mobile', 'Usuarios', user['id'],
+                        'El usuario actualizó sus datos desde la aplicación móvil.',
+                        usuario_id=user['id'], actor_id=user['id'])
+        profile = mobile_profile_payload(cursor, user['id'])
+        conn.commit()
+        return jsonify({'success': True, 'message': 'Perfil actualizado.', 'perfil': profile}), 200
+    except pyodbc.Error as ex:
+        if conn:
+            conn.rollback()
+        print(f"Error de base de datos al actualizar perfil móvil (sqlstate: {ex.args[0]}): {ex}")
+        return jsonify({'success': False, 'message': 'No fue posible actualizar el perfil.'}), 500
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Error inesperado al actualizar perfil móvil: {e}")
+        return jsonify({'success': False, 'message': 'Ocurrió un error inesperado.'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/mobile/perfil/foto', methods=['POST'])
+@jwt_required()
+def mobile_update_profile_photo():
+    user, response, status = load_mobile_jwt_user()
+    if response is not None:
+        return response, status
+
+    photo = request.files.get('foto')
+    valid, message, meta = validate_mobile_profile_photo(photo)
+    if not valid:
+        return jsonify({'success': False, 'message': message}), 400
+
+    conn = None
+    saved_path = None
+    try:
+        profile_dir = os.path.join(app.root_path, 'static', 'uploads', 'perfiles')
+        os.makedirs(profile_dir, exist_ok=True)
+        filename = f"{user['id']}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{secrets.token_hex(4)}.{meta['extension']}"
+        saved_path = os.path.join(profile_dir, filename)
+        public_path = f"/static/uploads/perfiles/{filename}"
+        photo.save(saved_path)
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT FotoPerfil FROM Personas WHERE UsuarioId = ?", (user['id'],))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'success': False, 'message': 'Perfil no encontrado.'}), 404
+        previous_path = row[0]
+        cursor.execute("UPDATE Personas SET FotoPerfil = ? WHERE UsuarioId = ?", (public_path, user['id']))
+        audit_event(cursor, 'foto_perfil_actualizada_mobile', 'Usuarios', user['id'],
+                    'El usuario actualizó su foto desde la aplicación móvil.',
+                    usuario_id=user['id'], actor_id=user['id'])
+        profile = mobile_profile_payload(cursor, user['id'])
+        conn.commit()
+        maybe_remove_previous_profile_photo(cursor, user['id'], previous_path)
+        return jsonify({'success': True, 'message': 'Foto actualizada.', 'foto_url': public_path, 'perfil': profile}), 200
+    except pyodbc.Error as ex:
+        if conn:
+            conn.rollback()
+        if saved_path and os.path.exists(saved_path):
+            os.remove(saved_path)
+        print(f"Error de base de datos al actualizar foto móvil (sqlstate: {ex.args[0]}): {ex}")
+        return jsonify({'success': False, 'message': 'No fue posible actualizar la foto.'}), 500
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        if saved_path and os.path.exists(saved_path):
+            os.remove(saved_path)
+        print(f"Error inesperado al actualizar foto móvil: {e}")
+        return jsonify({'success': False, 'message': 'Ocurrió un error inesperado.'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/mobile/auth/change-password', methods=['POST'])
+@jwt_required()
+def mobile_change_password():
+    user, response, status = load_mobile_jwt_user()
+    if response is not None:
+        return response, status
+
+    data = request.get_json(silent=True) or {}
+    current_password = data.get('current_password') or ''
+    new_password = data.get('new_password') or ''
+    confirm_password = data.get('confirm_password') or ''
+    errors = {}
+    if not current_password:
+        errors['current_password'] = 'La contraseña actual es obligatoria.'
+    if not new_password:
+        errors['new_password'] = 'La nueva contraseña es obligatoria.'
+    else:
+        password_error = is_valid_password(new_password)
+        if password_error:
+            errors['new_password'] = password_error
+    if not confirm_password:
+        errors['confirm_password'] = 'Confirma tu nueva contraseña.'
+    elif new_password != confirm_password:
+        errors['confirm_password'] = 'Las contraseñas no coinciden.'
+    if errors:
+        return validation_response(errors)
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT PasswordHash FROM Usuarios WHERE id = ?", (user['id'],))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'success': False, 'message': 'Usuario no encontrado.'}), 404
+        if not verificar_password(row[0], current_password):
+            return jsonify({'success': False, 'message': 'La contraseña actual es incorrecta.'}), 401
+        if verificar_password(row[0], new_password):
+            return jsonify({'success': False, 'message': 'La nueva contraseña no puede ser igual a la actual.'}), 409
+        cursor.execute("UPDATE Usuarios SET PasswordHash = ? WHERE id = ?", (hash_password(new_password), user['id']))
+        revoke_user_refresh_tokens(cursor, user['id'])
+        audit_event(cursor, 'password_actualizado_mobile', 'Usuarios', user['id'],
+                    'El usuario cambió su contraseña desde la aplicación móvil.',
+                    usuario_id=user['id'], actor_id=user['id'])
+        conn.commit()
+        record_auth_event('change_password', 'success', 'mobile')
+        return jsonify({'success': True, 'message': 'Contraseña actualizada. Inicia sesión nuevamente.'}), 200
+    except pyodbc.Error as ex:
+        if conn:
+            conn.rollback()
+        print(f"Error de base de datos al cambiar contraseña móvil (sqlstate: {ex.args[0]}): {ex}")
+        return jsonify({'success': False, 'message': 'No fue posible cambiar la contraseña.'}), 500
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Error inesperado al cambiar contraseña móvil: {e}")
+        return jsonify({'success': False, 'message': 'Ocurrió un error inesperado.'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
 @app.route('/api/mobile/auth/refresh', methods=['POST'])
 @jwt_required(refresh=True)
 def mobile_auth_refresh():
@@ -3563,6 +3873,109 @@ def mobile_crear_publicacion():
         if conn:
             conn.rollback()
         print(f"Error inesperado al crear publicación móvil: {e}")
+        return jsonify({'success': False, 'message': 'Ocurrió un error inesperado.'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/mobile/mi-portafolio', methods=['GET'])
+@mobile_role_required('prestador')
+def mobile_mi_portafolio():
+    user_id = g.mobile_user['id']
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT pt.id, pt.PublicacionId, pt.Titulo, pt.Descripcion, pt.ImagenUrl,
+                   pt.Activo, pt.CreadoEn, p.Titulo, p.Categoria
+            FROM PortafolioTrabajos pt
+            INNER JOIN Publicaciones p ON pt.PublicacionId = p.id
+            WHERE pt.PrestadorId = ? AND pt.Activo = 1
+            ORDER BY pt.CreadoEn DESC
+        """, (user_id,))
+        trabajos = []
+        for row in cursor.fetchall():
+            trabajos.append({
+                'id': row[0],
+                'publicacion_id': row[1],
+                'titulo': row[2],
+                'descripcion': row[3],
+                'imagen_url': row[4],
+                'activo': bool(row[5]),
+                'creado_en': row[6].strftime('%d/%m/%Y') if row[6] else '',
+                'publicacion_titulo': row[7],
+                'categoria': row[8],
+            })
+        return jsonify({'success': True, 'portafolio': trabajos}), 200
+    except pyodbc.Error as ex:
+        print(f"Error de base de datos al obtener portafolio móvil (sqlstate: {ex.args[0]}): {ex}")
+        return jsonify({'success': False, 'message': 'No fue posible cargar el portafolio.'}), 500
+    except Exception as e:
+        print(f"Error inesperado al obtener portafolio móvil: {e}")
+        return jsonify({'success': False, 'message': 'Ocurrió un error inesperado.'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/mobile/mi-perfil/resenas', methods=['GET'])
+@jwt_required()
+def mobile_mis_resenas():
+    user, response, status = load_mobile_jwt_user()
+    if response is not None:
+        return response, status
+    return mobile_profile_reviews_response(user['id'])
+
+
+@app.route('/api/mobile/perfiles/<int:usuario_id>/resenas', methods=['GET'])
+@jwt_required(optional=True)
+def mobile_perfil_resenas(usuario_id):
+    return mobile_profile_reviews_response(usuario_id)
+
+
+def mobile_profile_reviews_response(user_id):
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM Usuarios WHERE id = ? AND Activo = 1", (user_id,))
+        if not cursor.fetchone():
+            return jsonify({'success': False, 'message': 'Perfil no encontrado.'}), 404
+
+        cursor.execute("""
+            SELECT AVG(CAST(Calificacion AS FLOAT)), COUNT(*)
+            FROM Resenas
+            WHERE EvaluadoId = ? AND Calificacion IS NOT NULL
+        """, (user_id,))
+        summary = cursor.fetchone()
+        promedio = float(summary[0]) if summary and summary[0] is not None else None
+        total = int(summary[1] or 0) if summary else 0
+
+        cursor.execute("""
+            SELECT TOP 20 r.Calificacion, r.Comentario, r.CreadoEn,
+                   per.Nombre, per.ApellidoP
+            FROM Resenas r
+            LEFT JOIN Personas per ON r.RevisorId = per.UsuarioId
+            WHERE r.EvaluadoId = ? AND r.Calificacion IS NOT NULL
+            ORDER BY r.CreadoEn DESC
+        """, (user_id,))
+        resenas = []
+        for row in cursor.fetchall():
+            resenas.append({
+                'calificacion': int(row[0]) if row[0] is not None else None,
+                'comentario': row[1] or '',
+                'fecha': row[2].strftime('%d/%m/%Y') if row[2] else '',
+                'revisor_nombre': f"{row[3] or ''} {row[4] or ''}".strip() or 'Usuario JobNest',
+            })
+        return jsonify({'success': True, 'promedio': promedio, 'total': total, 'resenas': resenas}), 200
+    except pyodbc.Error as ex:
+        print(f"Error de base de datos al obtener reseñas móviles (sqlstate: {ex.args[0]}): {ex}")
+        return jsonify({'success': False, 'message': 'No fue posible cargar las reseñas.'}), 500
+    except Exception as e:
+        print(f"Error inesperado al obtener reseñas móviles: {e}")
         return jsonify({'success': False, 'message': 'Ocurrió un error inesperado.'}), 500
     finally:
         if conn:
