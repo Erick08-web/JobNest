@@ -2,13 +2,24 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { Activity, AlertTriangle, BadgeCheck, BriefcaseBusiness, ClipboardList, CreditCard, FileText, Search, ShieldCheck, UsersRound, XCircle } from "lucide-react";
-import { CompactDashboardRail } from "../components/SessionNav";
+import { Activity, AlertTriangle, BarChart3, Bell, BriefcaseBusiness, ClipboardList, CreditCard, FileText, RefreshCw, ShieldCheck, UsersRound } from "lucide-react";
+import {
+  AdminAlert,
+  AdminButton,
+  AdminCard,
+  AdminEmptyState,
+  AdminPageHeader,
+  AdminSectionTitle,
+  AdminShell,
+  AdminSkeleton,
+  AdminStatCard,
+  AdminBadge,
+  formatAdminMoney,
+  formatAdminDate,
+  humanizeAdminText,
+  statusTone
+} from "./components/AdminUI";
 import { fetchCurrentUser, getAdminSummary, type AdminSummary, type CurrentUser } from "../lib/api";
-
-function money(value: number) {
-  return `$${value.toLocaleString("es-MX")}`;
-}
 
 export default function AdminDashboardPage() {
   const [user, setUser] = useState<CurrentUser | null>(null);
@@ -26,7 +37,7 @@ export default function AdminDashboardPage() {
       setUser(current);
       setSummary(await getAdminSummary());
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "No fue posible cargar el dashboard administrador.");
+      setMessage(err instanceof Error ? err.message : "No pudimos cargar la información. Inténtalo nuevamente.");
     } finally {
       setLoading(false);
     }
@@ -34,92 +45,85 @@ export default function AdminDashboardPage() {
 
   useEffect(() => { void load(); }, []);
 
-  if (message && !summary && !loading) {
-    return (
-      <main className="dashboardV2 adminDashboard">
-        <CompactDashboardRail role="administrador" />
-        <section className="dashboardCanvas">
-          <div className="portfolioEmpty adminAccessBox">
-            <ShieldCheck size={34} />
-            <h3>{message}</h3>
-            <p>El panel administrador requiere una sesión con permisos de administrador.</p>
-            <Link href="/login">Iniciar sesión</Link>
-          </div>
-        </section>
-      </main>
-    );
-  }
-
   return (
-    <main className="dashboardV2 adminDashboard">
-      <CompactDashboardRail role="administrador" />
-      <section className="dashboardCanvas">
-        <div className="dashboardHeroCard adminHero">
-          <span className="sectionKicker"><ShieldCheck size={16} /> Centro de control</span>
-          <h1>{user ? `Administración JobNest, ${user.nombres}.` : "Administración JobNest."}</h1>
-          <p>Resumen operativo de usuarios, revisión de publicaciones, quejas, pagos y trazabilidad del sistema.</p>
-          <button className="primaryButton" onClick={() => void load()}><Activity size={18} /> Actualizar resumen</button>
-        </div>
+    <AdminShell title="Inicio" description="Resumen ejecutivo de la operación de JobNest." userName={user?.nombres} actions={<AdminButton onClick={() => void load()}><RefreshCw size={16} /> Actualizar</AdminButton>}>
+      {message && !summary && !loading ? (
+        <AdminEmptyState icon={ShieldCheck} title={message} description="El panel requiere una sesión con permisos de administrador." action={<Link className="adminButton primary" href="/login">Iniciar sesión</Link>} />
+      ) : null}
 
-        {message ? <div className="formAlert moduleAlert">{message}</div> : null}
-        {loading ? <div className="portfolioEmpty"><Search size={30} /><h3>Cargando resumen...</h3></div> : null}
+      {message && summary ? <AdminAlert>{message}</AdminAlert> : null}
 
-        <div className="metricGrid adminMetricGrid">
-          <article><ClipboardList /><strong>{summary?.publicaciones_pendientes ?? 0}</strong><span>Publicaciones por revisar</span></article>
-          <article><AlertTriangle /><strong>{summary?.quejas_pendientes ?? 0}</strong><span>Quejas pendientes</span></article>
-          <article><AlertTriangle /><strong>{summary?.alertas_pendientes ?? 0}</strong><span>Alertas sin leer</span></article>
-          <article><CreditCard /><strong>{money(summary?.pagos_total ?? 0)}</strong><span>Pagos registrados</span></article>
-        </div>
+      <AdminPageHeader
+        eyebrow="Centro de control"
+        title={user ? `Hola, ${user.nombres}.` : "Administración JobNest"}
+        description="Supervisa publicaciones, usuarios, solicitudes, pagos, quejas y trazabilidad desde una experiencia pensada para operación diaria."
+        icon={ShieldCheck}
+        actions={<Link className="adminButton" href="/admin/publicaciones"><ClipboardList size={16} /> Revisar publicaciones</Link>}
+      />
 
-        <section className="adminStatusStrip">
-          <article><BadgeCheck /><strong>{summary?.publicaciones_activas ?? 0}</strong><span>publicaciones activas</span></article>
-          <article><XCircle /><strong>{summary?.publicaciones_rechazadas ?? 0}</strong><span>rechazadas</span></article>
-          <article><BriefcaseBusiness /><strong>{summary?.solicitudes_nuevas ?? 0}</strong><span>solicitudes nuevas</span></article>
-          <article><ShieldCheck /><strong>{summary?.servicios_concluidos ?? 0}</strong><span>servicios concluidos</span></article>
-        </section>
-
-        <div className="dashboardColumns adminColumns">
-          <section className="dashPanel adminTablePanel">
-            <div className="sectionTitleRow"><div><span className="sectionKicker">Usuarios</span><h2>Estado de cuentas</h2></div><Link href="/admin/usuarios">Ver usuarios</Link></div>
-            <div className="adminStateList">
-              <span>Clientes activos: <strong>{summary?.clientes_activos ?? 0}</strong></span>
-              <span>Clientes inactivos: <strong>{summary?.clientes_inactivos ?? 0}</strong></span>
-              <span>Prestadores activos: <strong>{summary?.prestadores_activos ?? 0}</strong></span>
-              <span>Prestadores inactivos: <strong>{summary?.prestadores_inactivos ?? 0}</strong></span>
-              <span>Validación pendiente: <strong>{summary?.prestadores_pendientes_validacion ?? 0}</strong></span>
-            </div>
+      {loading ? <AdminSkeleton rows={4} /> : (
+        <>
+          <section className="adminGrid four" aria-label="Indicadores principales">
+            <AdminStatCard icon={ClipboardList} value={summary?.publicaciones_pendientes ?? 0} label="Publicaciones por revisar" context="Cola de moderación" href="/admin/publicaciones" tone="warning" />
+            <AdminStatCard icon={AlertTriangle} value={summary?.quejas_pendientes ?? 0} label="Quejas pendientes" context="Reportes por atender" href="/admin/quejas" tone="danger" />
+            <AdminStatCard icon={Bell} value={summary?.alertas_pendientes ?? 0} label="Alertas sin leer" context="Avisos administrativos" tone="info" />
+            <AdminStatCard icon={CreditCard} value={formatAdminMoney(summary?.pagos_total ?? 0)} label="Pagos registrados" context="Monto acumulado" href="/admin/pagos" tone="success" />
           </section>
-          <section className="dashPanel adminTablePanel">
-            <div className="sectionTitleRow"><div><span className="sectionKicker">Pagos</span><h2>Estados registrados</h2></div><Link href="/admin/pagos">Ver pagos</Link></div>
-            <div className="adminStateList">
-              {(summary?.pagos_por_estado ?? []).map((item) => <span key={item.estado}>{item.estado}: <strong>{item.total}</strong> · {money(item.monto)}</span>)}
-              {!summary?.pagos_por_estado?.length ? <span>Sin pagos registrados</span> : null}
-            </div>
+
+          <section className="adminGrid four" aria-label="Estado operativo">
+            <AdminStatCard icon={UsersRound} value={summary?.usuarios_activos ?? 0} label="Usuarios activos" context={`${summary?.usuarios_inactivos ?? 0} inactivos`} href="/admin/usuarios" />
+            <AdminStatCard icon={BriefcaseBusiness} value={summary?.solicitudes_nuevas ?? 0} label="Solicitudes nuevas" context={`${summary?.servicios_concluidos ?? 0} servicios concluidos`} href="/admin/solicitudes" tone="info" />
+            <AdminStatCard icon={ShieldCheck} value={summary?.publicaciones_activas ?? 0} label="Publicaciones activas" context={`${summary?.publicaciones_rechazadas ?? 0} rechazadas`} href="/admin/publicaciones" tone="success" />
+            <AdminStatCard icon={Activity} value={summary?.mensajes ?? 0} label="Mensajes registrados" context={`${summary?.resenas ?? 0} reseñas`} />
           </section>
-        </div>
 
-        <section className="dashPanel adminTablePanel">
-          <div className="sectionTitleRow"><div><span className="sectionKicker">Actividad</span><h2>Eventos recientes</h2></div><Link href="/admin/bitacora">Ver bitácora</Link></div>
-          <div className="adminTable compact">
-            {(summary?.actividad_reciente ?? []).map((item) => (
-              <article className="adminTableRow auditRow" key={item.id}>
-                <div><strong>{item.tipo_evento}</strong><span>{item.entidad} #{item.entidad_id ?? "-"} · {item.detalle}</span></div>
-                <span>{item.creado_en}</span>
-              </article>
-            ))}
-            {!summary?.actividad_reciente?.length ? <p className="mutedPanelText">Aún no hay actividad registrada.</p> : null}
-          </div>
-        </section>
+          <section className="adminGrid two">
+            <AdminCard>
+              <AdminSectionTitle eyebrow="Usuarios" title="Distribución de cuentas" action={<Link className="adminButton" href="/admin/usuarios">Ver usuarios</Link>} />
+              <div className="adminStateList">
+                <AdminBadge tone="success">Clientes activos: {summary?.clientes_activos ?? 0}</AdminBadge>
+                <AdminBadge tone="neutral">Clientes inactivos: {summary?.clientes_inactivos ?? 0}</AdminBadge>
+                <AdminBadge tone="success">Prestadores activos: {summary?.prestadores_activos ?? 0}</AdminBadge>
+                <AdminBadge tone="neutral">Prestadores inactivos: {summary?.prestadores_inactivos ?? 0}</AdminBadge>
+                <AdminBadge tone="warning">Validación pendiente: {summary?.prestadores_pendientes_validacion ?? 0}</AdminBadge>
+                <AdminBadge tone="info">Administradores: {summary?.administradores ?? 0}</AdminBadge>
+              </div>
+            </AdminCard>
 
-        <section className="adminModuleGrid">
-          <Link href="/admin/publicaciones"><ClipboardList /><strong>Publicaciones</strong><span>Aprobar, rechazar y controlar visibilidad del marketplace.</span></Link>
-          <Link href="/admin/quejas"><AlertTriangle /><strong>Quejas</strong><span>Atender reportes de clientes y prestadores.</span></Link>
-          <Link href="/admin/usuarios"><UsersRound /><strong>Usuarios</strong><span>Consultar clientes, prestadores y estado de cuentas.</span></Link>
-          <Link href="/admin/solicitudes"><BriefcaseBusiness /><strong>Solicitudes</strong><span>Ver proceso cliente-prestador y estados de servicio.</span></Link>
-          <Link href="/admin/pagos"><CreditCard /><strong>Pagos</strong><span>Consultar pagos internos, estados y servicios relacionados.</span></Link>
-          <Link href="/admin/bitacora"><FileText /><strong>Bitácora</strong><span>Monitorear eventos importantes y cambios del sistema.</span></Link>
-        </section>
-      </section>
-    </main>
+            <AdminCard>
+              <AdminSectionTitle eyebrow="Pagos" title="Estados registrados" action={<Link className="adminButton" href="/admin/pagos">Ver pagos</Link>} />
+              <div className="adminStateList">
+                {(summary?.pagos_por_estado ?? []).map((item) => (
+                  <AdminBadge tone={statusTone(item.estado)} key={item.estado}>{humanizeAdminText(item.estado)}: {item.total} · {formatAdminMoney(item.monto)}</AdminBadge>
+                ))}
+                {!summary?.pagos_por_estado?.length ? <AdminEmptyState icon={CreditCard} title="Sin pagos registrados" description="Cuando existan pagos, aparecerán agrupados por estado." /> : null}
+              </div>
+            </AdminCard>
+          </section>
+
+          <AdminCard>
+            <AdminSectionTitle eyebrow="Actividad reciente" title="Eventos importantes" action={<Link className="adminButton" href="/admin/bitacora"><FileText size={16} /> Abrir bitácora</Link>} />
+            <div className="adminTimeline">
+              {(summary?.actividad_reciente ?? []).map((item) => (
+                <article className="adminTimelineItem" key={item.id}>
+                  <span><Activity size={16} /></span>
+                  <div>
+                    <strong>{humanizeAdminText(item.tipo_evento)}</strong>
+                    <p>{humanizeAdminText(item.entidad)} {item.entidad_id ? `#${item.entidad_id}` : ""} · {item.detalle || "Evento registrado"} · {formatAdminDate(item.creado_en, true)}</p>
+                  </div>
+                </article>
+              ))}
+              {!summary?.actividad_reciente?.length ? <AdminEmptyState icon={FileText} title="No hay actividad reciente" description="La trazabilidad aparecerá aquí cuando haya eventos administrativos." /> : null}
+            </div>
+          </AdminCard>
+
+          <section className="adminGrid three" aria-label="Accesos rápidos">
+            <AdminStatCard icon={ClipboardList} value="Moderación" label="Publicaciones" context="Aprobar, rechazar, ocultar o suspender contenido" href="/admin/publicaciones" />
+            <AdminStatCard icon={AlertTriangle} value="Atención" label="Quejas" context="Responder reportes de clientes y prestadores" href="/admin/quejas" tone="warning" />
+            <AdminStatCard icon={BarChart3} value="Reportes" label="Analítica" context="KPIs, filtros, gráficas y exportaciones" href="/admin/analitica" tone="info" />
+          </section>
+        </>
+      )}
+    </AdminShell>
   );
 }

@@ -1,9 +1,24 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, ClipboardList, Eye, ImageIcon, RotateCcw, Search, XCircle } from "lucide-react";
-import { CompactDashboardRail } from "../../components/SessionNav";
+import { CheckCircle2, ClipboardList, Eye, ImageIcon, RotateCcw, ShieldCheck, XCircle } from "lucide-react";
+import {
+  AdminAlert,
+  AdminBadge,
+  AdminButton,
+  AdminCard,
+  AdminEmptyState,
+  AdminPageHeader,
+  AdminSearch,
+  AdminSectionTitle,
+  AdminSelect,
+  AdminShell,
+  AdminSkeleton,
+  AdminToolbar,
+  formatAdminMoney,
+  humanizeAdminText,
+  statusTone
+} from "../components/AdminUI";
 import {
   approveAdminImage,
   fetchCurrentUser,
@@ -28,15 +43,6 @@ const REVIEW_STATES: { value: PublicationState | "todas"; label: string }[] = [
   { value: "oculta", label: "Ocultas" }
 ];
 
-function money(value: number | null) {
-  return value ? `$${value.toLocaleString("es-MX")}` : "Cotizar";
-}
-
-function statusClass(value: boolean | string) {
-  if (typeof value === "boolean") return value ? "aceptada" : "rechazada";
-  return value.toLowerCase().replace(/\s+/g, "-");
-}
-
 function fieldRows(current?: AdminPublicationVersion | null, proposed?: AdminPublicationVersion | null) {
   const fields: [string, keyof AdminPublicationVersion][] = [
     ["Título", "titulo"],
@@ -53,7 +59,12 @@ function fieldRows(current?: AdminPublicationVersion | null, proposed?: AdminPub
   return fields.map(([label, key]) => {
     const before = current?.[key];
     const after = proposed?.[key];
-    return { label, before: String(before ?? "Sin dato"), after: String(after ?? "Sin dato"), changed: String(before ?? "") !== String(after ?? "") };
+    const format = (value: unknown) => {
+      if (typeof value === "boolean") return value ? "Sí" : "No";
+      if (key === "precio") return typeof value === "number" ? formatAdminMoney(value) : "Cotizar";
+      return String(value ?? "Sin dato");
+    };
+    return { label, before: format(before), after: format(after), changed: String(before ?? "") !== String(after ?? "") };
   });
 }
 
@@ -79,9 +90,9 @@ export default function AdminPublicationsPage() {
       setPublications(items);
       const first = selectedId ?? items[0]?.id ?? null;
       setSelectedId(first);
-      if (first) setDetail(await getAdminPublication(first));
+      setDetail(first ? await getAdminPublication(first) : null);
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "No fue posible cargar publicaciones.");
+      setMessage(err instanceof Error ? err.message : "No pudimos cargar la información. Inténtalo nuevamente.");
     } finally {
       setLoading(false);
     }
@@ -106,7 +117,11 @@ export default function AdminPublicationsPage() {
 
   const review = async (estado: Exclude<PublicationState, "borrador">) => {
     if (!detail?.version_actual) return;
-    if (!window.confirm(`¿Confirmas cambiar la publicación a ${estado}?`)) return;
+    if (["rechazada", "suspendida", "correcciones_solicitadas"].includes(estado) && !note.trim()) {
+      setMessage("Agrega una observación para esta acción.");
+      return;
+    }
+    if (!window.confirm(`¿Confirmas cambiar esta publicación a "${humanizeAdminText(estado)}"?`)) return;
     setWorkingId(`review-${estado}`);
     setMessage("");
     try {
@@ -115,7 +130,7 @@ export default function AdminPublicationsPage() {
       setNote("");
       await loadList();
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "No fue posible guardar la revisión.");
+      setMessage(err instanceof Error ? err.message : "No pudimos completar la acción. Inténtalo nuevamente.");
     } finally {
       setWorkingId(null);
     }
@@ -131,13 +146,17 @@ export default function AdminPublicationsPage() {
       setNote("");
       await loadList();
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "No fue posible reactivar.");
+      setMessage(err instanceof Error ? err.message : "No pudimos completar la acción. Inténtalo nuevamente.");
     } finally {
       setWorkingId(null);
     }
   };
 
   const updateImage = async (imageId: number, action: "aprobar" | "rechazar") => {
+    if (action === "rechazar" && !imageReason.trim()) {
+      setMessage("Agrega un motivo para rechazar la imagen.");
+      return;
+    }
     setWorkingId(`image-${imageId}-${action}`);
     try {
       const result = action === "aprobar" ? await approveAdminImage(imageId) : await rejectAdminImage(imageId, imageReason);
@@ -145,7 +164,7 @@ export default function AdminPublicationsPage() {
       setImageReason("");
       if (selectedId) setDetail(await getAdminPublication(selectedId));
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "No fue posible actualizar la imagen.");
+      setMessage(err instanceof Error ? err.message : "No pudimos completar la acción. Inténtalo nuevamente.");
     } finally {
       setWorkingId(null);
     }
@@ -155,98 +174,115 @@ export default function AdminPublicationsPage() {
   const selectedImages = detail?.imagenes.filter((item) => item.version_id === detail.version_actual?.id) ?? [];
 
   return (
-    <main className="dashboardV2 adminDashboard">
-      <CompactDashboardRail role="administrador" />
-      <section className="dashboardCanvas">
-        <header className="adminSectionHeader">
-          <div><span className="sectionKicker"><ClipboardList size={16} /> Moderación</span><h1>Publicaciones</h1><p>Valida datos, imágenes y versiones antes de que los cambios sean públicos.</p></div>
-          <Link href="/admin">Resumen</Link>
-        </header>
+    <AdminShell title="Publicaciones" description="Moderación de contenido, versiones e imágenes.">
+      <AdminPageHeader
+        eyebrow="Moderación"
+        title="Control de publicaciones"
+        description="Valida datos, imágenes y cambios antes de que una publicación sea visible para clientes."
+        icon={ClipboardList}
+      />
+      {message ? <AdminAlert tone={message.includes("guardada") || message.includes("actualizada") || message.includes("reactivada") ? "success" : "danger"}>{message}</AdminAlert> : null}
+      {loading ? <AdminSkeleton rows={5} /> : null}
 
-        {message ? <div className="formAlert moduleAlert">{message}</div> : null}
-        {loading ? <div className="portfolioEmpty"><Search size={30} /><h3>Cargando publicaciones...</h3></div> : null}
+      {!loading && !publications.length ? (
+        <AdminEmptyState icon={ShieldCheck} title="No hay publicaciones por administrar" description="Cuando un prestador cree o actualice una publicación, aparecerá aquí para revisión." />
+      ) : null}
 
-        <div className="adminModerationLayout">
-          <section className="dashPanel adminTablePanel">
-            <div className="sectionTitleRow">
-              <div><span className="sectionKicker">Cola</span><h2>Publicaciones</h2></div>
-            </div>
-            <label className="adminSearch wide"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar por oficio, prestador o título" /></label>
-            <select className="adminFilter" value={filter} onChange={(event) => setFilter(event.target.value as PublicationState | "todas")}>
-              {REVIEW_STATES.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}
-            </select>
-            <div className="adminListStack">
+      {!loading && publications.length ? (
+        <div className="adminModerationGrid">
+          <AdminCard>
+            <AdminSectionTitle eyebrow="Cola" title={`${filtered.length} publicaciones`} />
+            <AdminToolbar>
+              <AdminSearch value={query} onChange={setQuery} placeholder="Buscar por servicio, prestador o categoría" />
+              <AdminSelect value={filter} onChange={(value) => setFilter(value as PublicationState | "todas")} label="Estado">
+                {REVIEW_STATES.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}
+              </AdminSelect>
+            </AdminToolbar>
+            <div className="adminList">
               {filtered.map((item) => (
-                <button className={`adminListItem ${selectedId === item.id ? "active" : ""}`} type="button" key={item.id} onClick={() => void selectPublication(item.id)}>
+                <button className={`adminQueueItem ${selectedId === item.id ? "isActive" : ""}`} type="button" key={item.id} onClick={() => void selectPublication(item.id)}>
                   <strong>{item.titulo}</strong>
                   <span>{item.categoria} · {item.prestador_nombre}</span>
-                  <small>v{item.version_numero} · {item.estado_revision}</small>
+                  <small>Versión {item.version_numero} · {humanizeAdminText(item.estado_revision)}</small>
                 </button>
               ))}
-              {!filtered.length ? <p className="mutedPanelText">No hay publicaciones para este filtro.</p> : null}
+              {!filtered.length ? <AdminEmptyState icon={Eye} title="Sin resultados" description="No hay publicaciones que coincidan con esos filtros." /> : null}
             </div>
-          </section>
+          </AdminCard>
 
-          <section className="dashPanel adminTablePanel">
-            {!detail ? <div className="portfolioEmpty"><Eye size={28} /><h3>Selecciona una publicación.</h3></div> : (
-              <>
-                <div className="sectionTitleRow">
-                  <div><span className="sectionKicker">Detalle</span><h2>{detail.version_actual?.titulo}</h2></div>
-                  <span className={`statusPill ${statusClass(detail.version_actual?.estado || "pendiente_revision")}`}>{detail.version_actual?.estado}</span>
-                </div>
-                <div className="adminProviderStrip">
+          <AdminCard>
+            {!detail ? <AdminEmptyState icon={Eye} title="Selecciona una publicación" description="El detalle aparecerá aquí para revisar contenido, imágenes e historial." /> : (
+              <div className="adminGrid">
+                <AdminSectionTitle
+                  eyebrow="Detalle"
+                  title={detail.version_actual?.titulo || "Publicación"}
+                  action={<AdminBadge tone={statusTone(detail.version_actual?.estado)}>{humanizeAdminText(detail.version_actual?.estado)}</AdminBadge>}
+                />
+                <div className="adminProviderCard">
                   <strong>{detail.prestador.nombre}</strong>
-                  <span>{detail.prestador.email}</span>
-                  <span className={`statusPill ${statusClass(detail.prestador.activo)}`}>{detail.prestador.activo ? "Cuenta activa" : "Cuenta inactiva"}</span>
+                  <span className="adminMetaText">{detail.prestador.email}</span>
+                  <AdminBadge tone={statusTone(detail.prestador.activo)}>{detail.prestador.activo ? "Cuenta activa" : "Cuenta inactiva"}</AdminBadge>
+                  <AdminBadge tone={statusTone(detail.activa)}>{detail.activa ? "Visible" : "No visible"}</AdminBadge>
                 </div>
 
-                <div className="adminCompareGrid">
+                <AdminSectionTitle eyebrow="Contenido" title="Cambios propuestos" />
+                <div className="adminDetailGrid">
                   {compareRows.map((row) => (
-                    <article className={row.changed ? "changed" : ""} key={row.label}>
-                      <span>{row.label}</span>
-                      <div><small>Publicado</small><strong>{row.before}</strong></div>
-                      <div><small>Propuesto</small><strong>{row.after}</strong></div>
+                    <article className={`adminFieldCompare ${row.changed ? "changed" : ""}`} key={row.label}>
+                      <strong>{row.label}</strong>
+                      <div><small>Publicado</small><span>{row.before}</span></div>
+                      <div><small>Propuesto</small><span>{row.after}</span></div>
                     </article>
                   ))}
                 </div>
 
-                <div className="sectionTitleRow compactTitle"><div><span className="sectionKicker"><ImageIcon size={15} /> Imágenes</span><h2>Galería de versión</h2></div></div>
-                <input className="adminFilter imageReasonInput" value={imageReason} onChange={(event) => setImageReason(event.target.value)} placeholder="Motivo para rechazar imagen" />
-                <div className="adminImageGrid">
+                <AdminSectionTitle eyebrow="Imágenes" title="Galería de versión" />
+                <input className="adminReviewNote" value={imageReason} onChange={(event) => setImageReason(event.target.value)} placeholder="Motivo para rechazar imagen" aria-label="Motivo para rechazar imagen" />
+                <div className="adminImageGrid2">
                   {selectedImages.map((image) => (
-                    <article key={image.id}>
+                    <article className="adminImageCard" key={image.id}>
                       <img src={image.imagen_url} alt="Imagen de publicación" />
-                      <span className={`statusPill ${statusClass(image.estado_revision)}`}>{image.estado_revision}</span>
-                      {image.motivo_rechazo ? <small>{image.motivo_rechazo}</small> : null}
-                      <div>
-                        <button type="button" onClick={() => void updateImage(image.id, "aprobar")} disabled={workingId === `image-${image.id}-aprobar`}>Aprobar</button>
-                        <button type="button" className="dangerButton" onClick={() => void updateImage(image.id, "rechazar")} disabled={workingId === `image-${image.id}-rechazar`}>Rechazar</button>
+                      <AdminBadge tone={statusTone(image.estado_revision)}>{humanizeAdminText(image.estado_revision)}</AdminBadge>
+                      {image.motivo_rechazo ? <span className="adminMetaText">{image.motivo_rechazo}</span> : null}
+                      <div className="adminActionBar">
+                        <AdminButton type="button" tone="success" onClick={() => void updateImage(image.id, "aprobar")} disabled={workingId === `image-${image.id}-aprobar`}>Aprobar</AdminButton>
+                        <AdminButton type="button" tone="danger" onClick={() => void updateImage(image.id, "rechazar")} disabled={workingId === `image-${image.id}-rechazar`}>Rechazar</AdminButton>
                       </div>
                     </article>
                   ))}
-                  {!selectedImages.length ? <p className="mutedPanelText">Esta versión no tiene imágenes propias.</p> : null}
+                  {!selectedImages.length ? <AdminEmptyState icon={ImageIcon} title="Sin imágenes en esta versión" description="La publicación no incluye imágenes pendientes para esta versión." /> : null}
                 </div>
 
-                <textarea className="adminReviewNote" value={note} onChange={(event) => setNote(event.target.value)} placeholder="Observaciones o motivo para esta publicación" />
+                <AdminSectionTitle eyebrow="Acciones" title="Decisión administrativa" />
+                <textarea className="adminReviewNote" value={note} onChange={(event) => setNote(event.target.value)} placeholder="Observaciones o motivo para esta decisión" aria-label="Observaciones de revisión" />
                 <div className="adminActionBar">
-                  <button type="button" onClick={() => void review("aprobada")} disabled={workingId === "review-aprobada"}><CheckCircle2 size={15} /> Aprobar versión</button>
-                  <button type="button" onClick={() => void review("correcciones_solicitadas")} disabled={workingId === "review-correcciones_solicitadas"}>Correcciones</button>
-                  <button type="button" className="dangerButton" onClick={() => void review("rechazada")} disabled={workingId === "review-rechazada"}><XCircle size={15} /> Rechazar</button>
-                  <button type="button" className="dangerButton" onClick={() => void review("suspendida")} disabled={workingId === "review-suspendida"}>Suspender</button>
-                  <button type="button" onClick={() => void review("oculta")} disabled={workingId === "review-oculta"}>Ocultar</button>
-                  <button type="button" onClick={() => void reactivate()} disabled={workingId === "reactivar"}><RotateCcw size={15} /> Reactivar</button>
+                  <AdminButton type="button" tone="success" onClick={() => void review("aprobada")} disabled={workingId === "review-aprobada"}><CheckCircle2 size={15} /> Aprobar</AdminButton>
+                  <AdminButton type="button" onClick={() => void review("correcciones_solicitadas")} disabled={workingId === "review-correcciones_solicitadas"}>Pedir correcciones</AdminButton>
+                  <AdminButton type="button" tone="danger" onClick={() => void review("rechazada")} disabled={workingId === "review-rechazada"}><XCircle size={15} /> Rechazar</AdminButton>
+                  <AdminButton type="button" tone="danger" onClick={() => void review("suspendida")} disabled={workingId === "review-suspendida"}>Suspender</AdminButton>
+                  <AdminButton type="button" onClick={() => void review("oculta")} disabled={workingId === "review-oculta"}>Ocultar</AdminButton>
+                  <AdminButton type="button" onClick={() => void reactivate()} disabled={workingId === "reactivar"}><RotateCcw size={15} /> Reactivar</AdminButton>
                 </div>
 
-                <div className="adminRevisionLog">
-                  <h3>Historial de revisiones</h3>
-                  {detail.revisiones.map((item) => <p key={item.id}><strong>{item.accion}</strong> · {item.estado_anterior} → {item.estado_nuevo} · {item.creado_en}<span>{item.observaciones}</span></p>)}
-                  {!detail.revisiones.length ? <p className="mutedPanelText">Aún no hay revisiones.</p> : null}
+                <AdminSectionTitle eyebrow="Historial" title="Revisiones registradas" />
+                <div className="adminTimeline">
+                  {detail.revisiones.map((item) => (
+                    <article className="adminTimelineItem" key={item.id}>
+                      <span><ClipboardList size={15} /></span>
+                      <div>
+                        <strong>{humanizeAdminText(item.accion)}</strong>
+                        <p>{humanizeAdminText(item.estado_anterior)} → {humanizeAdminText(item.estado_nuevo)} · {item.creado_en}</p>
+                        {item.observaciones ? <p>{item.observaciones}</p> : null}
+                      </div>
+                    </article>
+                  ))}
+                  {!detail.revisiones.length ? <AdminEmptyState icon={ClipboardList} title="Sin historial" description="Las decisiones de moderación aparecerán aquí." /> : null}
                 </div>
-              </>
+              </div>
             )}
-          </section>
+          </AdminCard>
         </div>
-      </section>
-    </main>
+      ) : null}
+    </AdminShell>
   );
 }

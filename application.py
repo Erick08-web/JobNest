@@ -4865,6 +4865,888 @@ def marcar_concluido(solicitud_id):
 
 
 # ==================== ADMINISTRADOR ====================
+ANALYTICS_PRESETS = {
+    'today', 'yesterday', 'last_7_days', 'last_30_days',
+    'current_week', 'previous_week', 'current_month', 'previous_month',
+    'current_year', 'custom'
+}
+ANALYTICS_GRANULARITIES = {'day', 'week', 'month'}
+ANALYTICS_MAX_RANGE_DAYS = 370
+COMPLETED_REQUEST_STATES = {'concluido', 'concluida', 'calificado'}
+CANCELLED_REQUEST_STATES = {'cancelada', 'cancelada_cliente', 'cancelada_prestador'}
+
+
+def analytics_bad_request(message):
+    return jsonify({'success': False, 'message': message}), 400
+
+
+def parse_iso_date(value, field_name):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace('Z', '+00:00')).date()
+    except ValueError as exc:
+        raise ValueError(f'{field_name} debe tener formato ISO YYYY-MM-DD.') from exc
+
+
+def start_of_week(value):
+    return value - timedelta(days=value.weekday())
+
+
+def add_month(value):
+    if value.month == 12:
+        return value.replace(year=value.year + 1, month=1, day=1)
+    return value.replace(month=value.month + 1, day=1)
+
+
+def analytics_period_from_request():
+    preset = (request.args.get('preset') or 'last_30_days').strip()
+    if preset not in ANALYTICS_PRESETS:
+        raise ValueError('Preset de fecha no válido.')
+
+    granularity = (request.args.get('granularity') or 'day').strip()
+    if granularity not in ANALYTICS_GRANULARITIES:
+        raise ValueError('Granularidad no válida.')
+
+    today = datetime.now(timezone.utc).date()
+    if preset == 'today':
+        start_date = today
+        end_date = today
+    elif preset == 'yesterday':
+        start_date = today - timedelta(days=1)
+        end_date = start_date
+    elif preset == 'last_7_days':
+        start_date = today - timedelta(days=6)
+        end_date = today
+    elif preset == 'last_30_days':
+        start_date = today - timedelta(days=29)
+        end_date = today
+    elif preset == 'current_week':
+        start_date = start_of_week(today)
+        end_date = today
+    elif preset == 'previous_week':
+        end_date = start_of_week(today) - timedelta(days=1)
+        start_date = start_of_week(end_date)
+    elif preset == 'current_month':
+        start_date = today.replace(day=1)
+        end_date = today
+    elif preset == 'previous_month':
+        current_month_start = today.replace(day=1)
+        end_date = current_month_start - timedelta(days=1)
+        start_date = end_date.replace(day=1)
+    elif preset == 'current_year':
+        start_date = today.replace(month=1, day=1)
+        end_date = today
+    else:
+        start_date = parse_iso_date(request.args.get('date_from'), 'date_from')
+        end_date = parse_iso_date(request.args.get('date_to'), 'date_to')
+        if not start_date or not end_date:
+            raise ValueError('date_from y date_to son obligatorios con preset custom.')
+
+    explicit_from = parse_iso_date(request.args.get('date_from'), 'date_from') if preset != 'custom' and request.args.get('date_from') else None
+    explicit_to = parse_iso_date(request.args.get('date_to'), 'date_to') if preset != 'custom' and request.args.get('date_to') else None
+    if explicit_from:
+        start_date = explicit_from
+    if explicit_to:
+        end_date = explicit_to
+    if start_date > end_date:
+        raise ValueError('date_from no puede ser mayor que date_to.')
+
+    range_days = (end_date - start_date).days + 1
+    if range_days > ANALYTICS_MAX_RANGE_DAYS:
+        raise ValueError(f'El rango máximo permitido es de {ANALYTICS_MAX_RANGE_DAYS} días.')
+
+    start_dt = datetime.combine(start_date, datetime.min.time())
+    end_dt = datetime.combine(end_date + timedelta(days=1), datetime.min.time())
+    previous_end = start_dt
+    previous_start = previous_end - (end_dt - start_dt)
+    return {
+        'preset': preset,
+        'timezone': (request.args.get('timezone') or 'America/Mexico_City').strip(),
+        'granularity': granularity,
+        'start': start_dt,
+        'end': end_dt,
+        'previous_start': previous_start,
+        'previous_end': previous_end,
+        'range_days': range_days,
+        'filters': {
+            'date_from': start_date.isoformat(),
+            'date_to': end_date.isoformat(),
+            'preset': preset,
+            'timezone': (request.args.get('timezone') or 'America/Mexico_City').strip(),
+            'granularity': granularity,
+            'role': (request.args.get('role') or '').strip(),
+            'category': (request.args.get('category') or '').strip(),
+            'status': (request.args.get('status') or '').strip(),
+            'location': (request.args.get('location') or '').strip(),
+            'provider_id': (request.args.get('provider_id') or '').strip(),
+            'client_id': (request.args.get('client_id') or '').strip(),
+            'admin_id': (request.args.get('admin_id') or '').strip(),
+            'payment_method': (request.args.get('payment_method') or '').strip(),
+            'payment_status': (request.args.get('payment_status') or '').strip(),
+        }
+    }
+
+
+def parse_positive_filter_id(name, maximum=10_000_000):
+    raw = (request.args.get(name) or '').strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f'{name} debe ser numérico.') from exc
+    if value < 1 or value > maximum:
+        raise ValueError(f'{name} está fuera de rango.')
+    return value
+
+
+def parse_analytics_limit(default=10, maximum=25):
+    return parse_int_arg('limit', default, 1, maximum)
+
+
+def analytics_period_response(period):
+    return {
+        'date_from': period['filters']['date_from'],
+        'date_to': period['filters']['date_to'],
+        'previous_date_from': period['previous_start'].date().isoformat(),
+        'previous_date_to': (period['previous_end'] - timedelta(days=1)).date().isoformat(),
+        'granularity': period['granularity'],
+        'timezone': period['timezone'],
+    }
+
+
+def scalar(cursor, sql, params=()):
+    cursor.execute(sql, params)
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
+def safe_change(current, previous):
+    current_value = float(current or 0)
+    previous_value = float(previous or 0)
+    if previous_value == 0:
+        return None
+    return round(((current_value - previous_value) / previous_value) * 100, 2)
+
+
+def kpi(current, previous=None):
+    return {
+        'value': float(current or 0) if isinstance(current, float) else int(current or 0),
+        'previous': float(previous or 0) if isinstance(previous, float) else int(previous or 0),
+        'change_percentage': safe_change(current, previous)
+    }
+
+
+def date_bucket_expression(column_name, granularity):
+    if granularity == 'month':
+        return f"CONVERT(char(7), {column_name}, 126)"
+    if granularity == 'week':
+        return f"CONCAT(DATEPART(year, {column_name}), '-W', RIGHT('0' + CAST(DATEPART(iso_week, {column_name}) AS varchar(2)), 2))"
+    return f"CONVERT(char(10), CAST({column_name} AS date), 23)"
+
+
+def bucket_key(value, granularity):
+    if granularity == 'month':
+        return value.strftime('%Y-%m')
+    if granularity == 'week':
+        iso = value.isocalendar()
+        return f'{iso.year}-W{iso.week:02d}'
+    return value.isoformat()
+
+
+def bucket_label(value, granularity):
+    if granularity == 'month':
+        return value.strftime('%Y-%m')
+    if granularity == 'week':
+        iso = value.isocalendar()
+        return f'Semana {iso.week:02d}'
+    return value.strftime('%d %b')
+
+
+def iter_period_buckets(start_dt, end_dt, granularity):
+    current = start_dt.date()
+    end_date = (end_dt - timedelta(days=1)).date()
+    if granularity == 'month':
+        current = current.replace(day=1)
+        while current <= end_date:
+            yield current
+            current = add_month(current)
+        return
+    if granularity == 'week':
+        current = start_of_week(current)
+        while current <= end_date:
+            yield current
+            current += timedelta(days=7)
+        return
+    while current <= end_date:
+        yield current
+        current += timedelta(days=1)
+
+
+def make_zero_series(period, values_by_bucket, value_key='value'):
+    series = []
+    for bucket in iter_period_buckets(period['start'], period['end'], period['granularity']):
+        key = bucket_key(bucket, period['granularity'])
+        item = {'period': key, 'label': bucket_label(bucket, period['granularity']), value_key: values_by_bucket.get(key, 0)}
+        series.append(item)
+    return series
+
+
+def query_time_series(cursor, table, date_column, period, aggregate='COUNT(*)', joins='', where='', params=()):
+    bucket_sql = date_bucket_expression(date_column, period['granularity'])
+    clauses = [f"{date_column} >= ?", f"{date_column} < ?"]
+    values = [period['start'], period['end']]
+    if where:
+        clauses.append(where)
+        values.extend(params)
+    cursor.execute(f"""
+        SELECT {bucket_sql} AS Periodo, {aggregate} AS Valor
+        FROM {table}
+        {joins}
+        WHERE {' AND '.join(clauses)}
+        GROUP BY {bucket_sql}
+        ORDER BY Periodo
+    """, values)
+    return {str(row[0]): float(row[1] or 0) for row in cursor.fetchall()}
+
+
+def distribution_rows(cursor, sql, params=()):
+    cursor.execute(sql, params)
+    rows = cursor.fetchall()
+    total = sum(float(row[1] or 0) for row in rows)
+    result = []
+    for row in rows:
+        value = float(row[1] or 0)
+        result.append({
+            'label': row[0] or 'Sin dato',
+            'value': int(value) if value.is_integer() else value,
+            'percentage': round((value / total) * 100, 2) if total else 0
+        })
+    return result
+
+
+def validate_filter_options(cursor, period):
+    category = period['filters']['category']
+    status = period['filters']['status']
+    payment_status = period['filters']['payment_status']
+    payment_method = period['filters']['payment_method']
+    role = period['filters']['role']
+    if role and role not in {'cliente', 'prestador', 'administrador'}:
+        raise ValueError('Rol no válido.')
+    if category:
+        cursor.execute("""
+            SELECT TOP 1 1
+            FROM (
+                SELECT Nombre AS Categoria FROM Categorias WHERE Activa = 1
+                UNION
+                SELECT Categoria FROM Publicaciones WHERE Categoria IS NOT NULL
+                UNION
+                SELECT Categoria FROM PublicacionVersiones WHERE Categoria IS NOT NULL
+            ) c
+            WHERE LOWER(c.Categoria) = LOWER(?)
+        """, (category,))
+        if not cursor.fetchone():
+            raise ValueError('Categoría no válida.')
+    if status:
+        cursor.execute("""
+            SELECT TOP 1 1
+            FROM (
+                SELECT Estado AS Valor FROM SolicitudesServicios WHERE Estado IS NOT NULL
+                UNION SELECT EstadoRevision FROM Publicaciones WHERE EstadoRevision IS NOT NULL
+                UNION SELECT Estado FROM PublicacionVersiones WHERE Estado IS NOT NULL
+                UNION SELECT Estado FROM Quejas WHERE Estado IS NOT NULL
+            ) s
+            WHERE LOWER(s.Valor) = LOWER(?)
+        """, (status,))
+        if not cursor.fetchone():
+            raise ValueError('Estado no válido.')
+    if payment_status:
+        cursor.execute("SELECT TOP 1 1 FROM Estatus WHERE LOWER(Nombre) = LOWER(?)", (payment_status,))
+        if not cursor.fetchone():
+            raise ValueError('Estado de pago no válido.')
+    if payment_method:
+        cursor.execute("SELECT TOP 1 1 FROM MetodosPago WHERE LOWER(Nombre) = LOWER(?)", (payment_method,))
+        if not cursor.fetchone():
+            raise ValueError('Método de pago no válido.')
+    for id_name in ('provider_id', 'client_id', 'admin_id'):
+        value = parse_positive_filter_id(id_name)
+        if value:
+            cursor.execute("SELECT id FROM Usuarios WHERE id = ?", (value,))
+            if not cursor.fetchone():
+                raise ValueError(f'{id_name} no existe.')
+
+
+def analytics_context():
+    unauthorized = require_admin_session()
+    if unauthorized:
+        return None, unauthorized
+    try:
+        period = analytics_period_from_request()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_control_schema(cursor)
+        validate_filter_options(cursor, period)
+        return (conn, cursor, period), None
+    except ValueError as exc:
+        return None, analytics_bad_request(str(exc))
+    except Exception:
+        log_exception(logger, 'admin_analytics_context_error')
+        return None, api_error_response(500, 'No fue posible cargar analítica.')
+
+
+def analytics_response(payload, period):
+    payload.update({
+        'success': True,
+        'filters': period['filters'],
+        'period': analytics_period_response(period),
+        'generated_at': datetime.now(timezone.utc).isoformat()
+    })
+    return jsonify(payload), 200
+
+
+@app.route('/admin/analytics/filter-options', methods=['GET'])
+def admin_analytics_filter_options():
+    context, error = analytics_context()
+    if error:
+        return error
+    conn, cursor, period = context
+    try:
+        cursor.execute("""
+            SELECT Nombre FROM Roles
+            UNION SELECT 'cliente'
+            UNION SELECT 'prestador'
+            UNION SELECT 'administrador'
+            ORDER BY Nombre
+        """)
+        roles = [row[0] for row in cursor.fetchall()]
+        cursor.execute("""
+            SELECT Categoria FROM (
+                SELECT Nombre AS Categoria, Orden FROM Categorias WHERE Activa = 1
+                UNION
+                SELECT DISTINCT Categoria, 9999 FROM Publicaciones WHERE Categoria IS NOT NULL
+                UNION
+                SELECT DISTINCT Categoria, 9999 FROM PublicacionVersiones WHERE Categoria IS NOT NULL
+            ) c
+            GROUP BY Categoria
+            ORDER BY MIN(Orden), Categoria
+        """)
+        categories = [row[0] for row in cursor.fetchall()]
+        cursor.execute("SELECT DISTINCT EstadoRevision FROM Publicaciones WHERE EstadoRevision IS NOT NULL UNION SELECT DISTINCT Estado FROM PublicacionVersiones WHERE Estado IS NOT NULL ORDER BY EstadoRevision")
+        publication_states = [row[0] for row in cursor.fetchall()]
+        cursor.execute("SELECT DISTINCT Estado FROM SolicitudesServicios WHERE Estado IS NOT NULL ORDER BY Estado")
+        request_states = [row[0] for row in cursor.fetchall()]
+        cursor.execute("SELECT Nombre FROM MetodosPago ORDER BY Nombre")
+        payment_methods = [row[0] for row in cursor.fetchall()]
+        cursor.execute("SELECT Nombre FROM Estatus ORDER BY Nombre")
+        payment_states = [row[0] for row in cursor.fetchall()]
+        cursor.execute("""
+            SELECT DISTINCT Ubicacion
+            FROM Publicaciones
+            WHERE Ubicacion IS NOT NULL AND LTRIM(RTRIM(Ubicacion)) <> ''
+            ORDER BY Ubicacion
+        """)
+        locations = [row[0] for row in cursor.fetchall()]
+        cursor.execute("""
+            SELECT DISTINCT u.id, u.Email
+            FROM Usuarios u
+            INNER JOIN UsuarioRoles ur ON u.id = ur.UsuarioId
+            INNER JOIN Roles r ON ur.RolId = r.id
+            WHERE LOWER(r.Nombre) IN ('admin', 'administrador')
+            ORDER BY u.Email
+        """)
+        administrators = [{'id': row[0], 'label': row[1]} for row in cursor.fetchall()]
+        return analytics_response({
+            'options': {
+                'roles': roles,
+                'categories': categories,
+                'publication_states': publication_states,
+                'request_states': request_states,
+                'payment_methods': payment_methods,
+                'payment_states': payment_states,
+                'locations': locations,
+                'administrators': administrators,
+                'presets': sorted(ANALYTICS_PRESETS),
+                'granularities': sorted(ANALYTICS_GRANULARITIES)
+            }
+        }, period)
+    except Exception:
+        log_exception(logger, 'admin_analytics_filter_options_error')
+        return api_error_response(500, 'No fue posible cargar opciones de filtro.')
+    finally:
+        conn.close()
+
+
+@app.route('/admin/analytics/overview', methods=['GET'])
+def admin_analytics_overview():
+    context, error = analytics_context()
+    if error:
+        return error
+    conn, cursor, period = context
+    try:
+        current_params = (period['start'], period['end'])
+        previous_params = (period['previous_start'], period['previous_end'])
+        new_users = scalar(cursor, "SELECT COUNT(*) FROM Usuarios WHERE CreadoEn >= ? AND CreadoEn < ?", current_params)
+        prev_users = scalar(cursor, "SELECT COUNT(*) FROM Usuarios WHERE CreadoEn >= ? AND CreadoEn < ?", previous_params)
+        requests_count = scalar(cursor, "SELECT COUNT(*) FROM SolicitudesServicios WHERE FechaSolicitud >= ? AND FechaSolicitud < ?", current_params)
+        prev_requests = scalar(cursor, "SELECT COUNT(*) FROM SolicitudesServicios WHERE FechaSolicitud >= ? AND FechaSolicitud < ?", previous_params)
+        completed = scalar(cursor, f"SELECT COUNT(*) FROM SolicitudesServicios WHERE FechaSolicitud >= ? AND FechaSolicitud < ? AND Estado IN ({','.join('?' for _ in COMPLETED_REQUEST_STATES)})", (*current_params, *COMPLETED_REQUEST_STATES))
+        prev_completed = scalar(cursor, f"SELECT COUNT(*) FROM SolicitudesServicios WHERE FechaSolicitud >= ? AND FechaSolicitud < ? AND Estado IN ({','.join('?' for _ in COMPLETED_REQUEST_STATES)})", (*previous_params, *COMPLETED_REQUEST_STATES))
+        payments_amount = scalar(cursor, "SELECT COALESCE(SUM(Monto), 0) FROM Pagos WHERE CreadoEn >= ? AND CreadoEn < ?", current_params)
+        prev_payments_amount = scalar(cursor, "SELECT COALESCE(SUM(Monto), 0) FROM Pagos WHERE CreadoEn >= ? AND CreadoEn < ?", previous_params)
+        avg_rating = scalar(cursor, "SELECT AVG(CAST(Calificacion AS float)) FROM Resenas WHERE CreadoEn >= ? AND CreadoEn < ?", current_params)
+        active_publications = scalar(cursor, "SELECT COUNT(*) FROM Publicaciones WHERE Activa = 1")
+        prev_active_publications = active_publications
+        cursor.execute("""
+            SELECT TOP 8 id, TipoEvento, Entidad, EntidadId, Detalle, CreadoEn
+            FROM BitacoraAdmin
+            WHERE CreadoEn >= ? AND CreadoEn < ?
+            ORDER BY CreadoEn DESC
+        """, current_params)
+        recent_activity = [{
+            'id': row[0],
+            'type': row[1],
+            'entity': row[2],
+            'entity_id': row[3],
+            'description': row[4] or '',
+            'created_at': row[5].isoformat() if row[5] else None
+        } for row in cursor.fetchall()]
+        return analytics_response({
+            'kpis': {
+                'new_users': kpi(new_users, prev_users),
+                'active_publications': kpi(active_publications, prev_active_publications),
+                'requests': kpi(requests_count, prev_requests),
+                'completed_jobs': kpi(completed, prev_completed),
+                'payments_amount': {
+                    'value': float(payments_amount or 0),
+                    'previous': float(prev_payments_amount or 0),
+                    'change_percentage': safe_change(payments_amount, prev_payments_amount)
+                },
+                'average_rating': {
+                    'value': round(float(avg_rating), 2) if avg_rating is not None else None,
+                    'previous': None,
+                    'change_percentage': None
+                }
+            },
+            'recent_activity': recent_activity,
+        }, period)
+    except Exception:
+        log_exception(logger, 'admin_analytics_overview_error')
+        return api_error_response(500, 'No fue posible cargar analítica general.')
+    finally:
+        conn.close()
+
+
+@app.route('/admin/analytics/users', methods=['GET'])
+def admin_analytics_users():
+    context, error = analytics_context()
+    if error:
+        return error
+    conn, cursor, period = context
+    try:
+        role = period['filters']['role']
+        role_filter = ''
+        role_params = []
+        if role == 'prestador':
+            role_filter = "AND pr.id IS NOT NULL"
+        elif role == 'administrador':
+            role_filter = "AND admin_roles.UsuarioId IS NOT NULL"
+        elif role == 'cliente':
+            role_filter = "AND pr.id IS NULL AND admin_roles.UsuarioId IS NULL"
+        base_join = """
+            LEFT JOIN Prestadores pr ON u.id = pr.UsuarioId
+            LEFT JOIN (
+                SELECT DISTINCT ur.UsuarioId
+                FROM UsuarioRoles ur
+                INNER JOIN Roles r ON ur.RolId = r.id
+                WHERE LOWER(r.Nombre) IN ('admin', 'administrador')
+            ) admin_roles ON u.id = admin_roles.UsuarioId
+        """
+        totals_sql = f"""
+            SELECT COUNT(*),
+                   SUM(CASE WHEN u.Activo = 1 THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN u.Activo = 0 THEN 1 ELSE 0 END)
+            FROM Usuarios u
+            {base_join}
+            WHERE 1 = 1 {role_filter}
+        """
+        cursor.execute(totals_sql, role_params)
+        total_row = cursor.fetchone()
+        new_users = scalar(cursor, f"SELECT COUNT(*) FROM Usuarios u {base_join} WHERE u.CreadoEn >= ? AND u.CreadoEn < ? {role_filter}", (period['start'], period['end'], *role_params))
+        prev_new_users = scalar(cursor, f"SELECT COUNT(*) FROM Usuarios u {base_join} WHERE u.CreadoEn >= ? AND u.CreadoEn < ? {role_filter}", (period['previous_start'], period['previous_end'], *role_params))
+        series_values = query_time_series(cursor, "Usuarios u", "u.CreadoEn", period, joins=base_join, where=f"1 = 1 {role_filter}", params=role_params)
+        cursor.execute(f"""
+            SELECT
+                CASE
+                    WHEN admin_roles.UsuarioId IS NOT NULL THEN 'administrador'
+                    WHEN pr.id IS NOT NULL THEN 'prestador'
+                    ELSE 'cliente'
+                END AS Rol,
+                COUNT(*) AS Total
+            FROM Usuarios u
+            {base_join}
+            WHERE 1 = 1 {role_filter}
+            GROUP BY CASE WHEN admin_roles.UsuarioId IS NOT NULL THEN 'administrador' WHEN pr.id IS NOT NULL THEN 'prestador' ELSE 'cliente' END
+        """, role_params)
+        distribution = distribution_rows(cursor, f"""
+            SELECT Rol, Total FROM (
+                SELECT
+                    CASE WHEN admin_roles.UsuarioId IS NOT NULL THEN 'administrador'
+                         WHEN pr.id IS NOT NULL THEN 'prestador'
+                         ELSE 'cliente' END AS Rol,
+                    COUNT(*) AS Total
+                FROM Usuarios u
+                {base_join}
+                WHERE 1 = 1 {role_filter}
+                GROUP BY CASE WHEN admin_roles.UsuarioId IS NOT NULL THEN 'administrador' WHEN pr.id IS NOT NULL THEN 'prestador' ELSE 'cliente' END
+            ) roles
+        """, role_params)
+        providers_with_publications = scalar(cursor, "SELECT COUNT(DISTINCT pr.UsuarioId) FROM Prestadores pr INNER JOIN Publicaciones p ON pr.UsuarioId = p.UsuarioId")
+        providers_without_publications = scalar(cursor, "SELECT COUNT(*) FROM Prestadores pr WHERE NOT EXISTS (SELECT 1 FROM Publicaciones p WHERE p.UsuarioId = pr.UsuarioId)")
+        return analytics_response({
+            'totals': {
+                'users': int(total_row[0] or 0),
+                'active': int(total_row[1] or 0),
+                'inactive': int(total_row[2] or 0),
+                'new_in_period': kpi(new_users, prev_new_users),
+                'providers_with_publications': int(providers_with_publications or 0),
+                'providers_without_publications': int(providers_without_publications or 0)
+            },
+            'series': {'registrations': make_zero_series(period, series_values)},
+            'distributions': {'by_role': distribution}
+        }, period)
+    except Exception:
+        log_exception(logger, 'admin_analytics_users_error')
+        return api_error_response(500, 'No fue posible cargar analítica de usuarios.')
+    finally:
+        conn.close()
+
+
+@app.route('/admin/analytics/publications', methods=['GET'])
+def admin_analytics_publications():
+    context, error = analytics_context()
+    if error:
+        return error
+    conn, cursor, period = context
+    try:
+        clauses = ["p.FechaCreacion >= ?", "p.FechaCreacion < ?"]
+        params = [period['start'], period['end']]
+        if period['filters']['category']:
+            clauses.append("LOWER(p.Categoria) = LOWER(?)")
+            params.append(period['filters']['category'])
+        if period['filters']['status']:
+            clauses.append("LOWER(p.EstadoRevision) = LOWER(?)")
+            params.append(period['filters']['status'])
+        provider_id = parse_positive_filter_id('provider_id')
+        if provider_id:
+            clauses.append("p.UsuarioId = ?")
+            params.append(provider_id)
+        where = ' AND '.join(clauses)
+        totals = scalar(cursor, f"SELECT COUNT(*) FROM Publicaciones p WHERE {where}", params)
+        active = scalar(cursor, f"SELECT COUNT(*) FROM Publicaciones p WHERE {where} AND p.Activa = 1", params)
+        inactive = scalar(cursor, f"SELECT COUNT(*) FROM Publicaciones p WHERE {where} AND p.Activa = 0", params)
+        with_images = scalar(cursor, f"SELECT COUNT(DISTINCT p.id) FROM Publicaciones p INNER JOIN PublicacionImagenes img ON p.id = img.PublicacionId WHERE {where} AND img.EstadoRevision <> 'eliminada'", params)
+        price_row = cursor.execute(f"SELECT AVG(CAST(p.Precio AS float)), MIN(p.Precio), MAX(p.Precio) FROM Publicaciones p WHERE {where} AND p.Precio IS NOT NULL", params).fetchone()
+        moderation_hours = scalar(cursor, """
+            SELECT AVG(CAST(DATEDIFF(minute, CreadoEn, RevisadoEn) AS float)) / 60.0
+            FROM PublicacionVersiones
+            WHERE CreadoEn >= ? AND CreadoEn < ? AND RevisadoEn IS NOT NULL
+        """, (period['start'], period['end']))
+        by_category = distribution_rows(cursor, f"SELECT COALESCE(p.Categoria, 'Sin categoría'), COUNT(*) FROM Publicaciones p WHERE {where} GROUP BY p.Categoria ORDER BY COUNT(*) DESC", params)
+        by_state = distribution_rows(cursor, f"SELECT COALESCE(p.EstadoRevision, 'sin_estado'), COUNT(*) FROM Publicaciones p WHERE {where} GROUP BY p.EstadoRevision ORDER BY COUNT(*) DESC", params)
+        series_values = query_time_series(cursor, "Publicaciones p", "p.FechaCreacion", period, where=' AND '.join(clauses[2:]), params=params[2:])
+        without_requests = scalar(cursor, f"SELECT COUNT(*) FROM Publicaciones p WHERE {where} AND NOT EXISTS (SELECT 1 FROM SolicitudesServicios s WHERE s.PublicacionId = p.id)", params)
+        return analytics_response({
+            'totals': {
+                'publications': int(totals or 0),
+                'active': int(active or 0),
+                'inactive': int(inactive or 0),
+                'with_images': int(with_images or 0),
+                'without_images': max(int(totals or 0) - int(with_images or 0), 0),
+                'without_requests': int(without_requests or 0),
+                'average_moderation_hours': round(float(moderation_hours), 2) if moderation_hours is not None else None,
+                'price': {
+                    'average': round(float(price_row[0]), 2) if price_row and price_row[0] is not None else None,
+                    'minimum': float(price_row[1]) if price_row and price_row[1] is not None else None,
+                    'maximum': float(price_row[2]) if price_row and price_row[2] is not None else None
+                }
+            },
+            'series': {'created': make_zero_series(period, series_values)},
+            'distributions': {'by_category': by_category, 'by_state': by_state}
+        }, period)
+    except Exception:
+        log_exception(logger, 'admin_analytics_publications_error')
+        return api_error_response(500, 'No fue posible cargar analítica de publicaciones.')
+    finally:
+        conn.close()
+
+
+@app.route('/admin/analytics/requests', methods=['GET'])
+def admin_analytics_requests():
+    context, error = analytics_context()
+    if error:
+        return error
+    conn, cursor, period = context
+    try:
+        clauses = ["s.FechaSolicitud >= ?", "s.FechaSolicitud < ?"]
+        params = [period['start'], period['end']]
+        if period['filters']['category']:
+            clauses.append("LOWER(p.Categoria) = LOWER(?)")
+            params.append(period['filters']['category'])
+        if period['filters']['status']:
+            clauses.append("LOWER(s.Estado) = LOWER(?)")
+            params.append(period['filters']['status'])
+        provider_id = parse_positive_filter_id('provider_id')
+        client_id = parse_positive_filter_id('client_id')
+        if provider_id:
+            clauses.append("s.PrestadorId = ?")
+            params.append(provider_id)
+        if client_id:
+            clauses.append("s.ClienteId = ?")
+            params.append(client_id)
+        where = ' AND '.join(clauses)
+        total = scalar(cursor, f"SELECT COUNT(*) FROM SolicitudesServicios s LEFT JOIN Publicaciones p ON s.PublicacionId = p.id WHERE {where}", params)
+        completed_placeholders = ','.join('?' for _ in COMPLETED_REQUEST_STATES)
+        cancelled_placeholders = ','.join('?' for _ in CANCELLED_REQUEST_STATES)
+        completed = scalar(cursor, f"SELECT COUNT(*) FROM SolicitudesServicios s LEFT JOIN Publicaciones p ON s.PublicacionId = p.id WHERE {where} AND s.Estado IN ({completed_placeholders})", (*params, *COMPLETED_REQUEST_STATES))
+        accepted = scalar(cursor, f"SELECT COUNT(*) FROM SolicitudesServicios s LEFT JOIN Publicaciones p ON s.PublicacionId = p.id WHERE {where} AND s.Estado = 'aceptada'", params)
+        rejected = scalar(cursor, f"SELECT COUNT(*) FROM SolicitudesServicios s LEFT JOIN Publicaciones p ON s.PublicacionId = p.id WHERE {where} AND s.Estado = 'rechazada'", params)
+        cancelled = scalar(cursor, f"SELECT COUNT(*) FROM SolicitudesServicios s LEFT JOIN Publicaciones p ON s.PublicacionId = p.id WHERE {where} AND s.Estado IN ({cancelled_placeholders})", (*params, *CANCELLED_REQUEST_STATES))
+        avg_acceptance_hours = scalar(cursor, f"SELECT AVG(CAST(DATEDIFF(minute, s.FechaSolicitud, s.FechaAceptacion) AS float)) / 60.0 FROM SolicitudesServicios s LEFT JOIN Publicaciones p ON s.PublicacionId = p.id WHERE {where} AND s.FechaAceptacion IS NOT NULL", params)
+        by_state = distribution_rows(cursor, f"SELECT COALESCE(s.Estado, 'sin_estado'), COUNT(*) FROM SolicitudesServicios s LEFT JOIN Publicaciones p ON s.PublicacionId = p.id WHERE {where} GROUP BY s.Estado ORDER BY COUNT(*) DESC", params)
+        by_category = distribution_rows(cursor, f"SELECT COALESCE(p.Categoria, 'Sin categoría'), COUNT(*) FROM SolicitudesServicios s LEFT JOIN Publicaciones p ON s.PublicacionId = p.id WHERE {where} GROUP BY p.Categoria ORDER BY COUNT(*) DESC", params)
+        series_values = query_time_series(cursor, "SolicitudesServicios s", "s.FechaSolicitud", period, joins="LEFT JOIN Publicaciones p ON s.PublicacionId = p.id", where=' AND '.join(clauses[2:]), params=params[2:])
+        top_publications = []
+        cursor.execute(f"""
+            SELECT TOP (?) p.id, p.Titulo, COUNT(*) AS Total
+            FROM SolicitudesServicios s
+            LEFT JOIN Publicaciones p ON s.PublicacionId = p.id
+            WHERE {where}
+            GROUP BY p.id, p.Titulo
+            ORDER BY Total DESC
+        """, (parse_analytics_limit(), *params))
+        top_publications = [{'id': row[0], 'label': row[1] or 'Sin título', 'value': row[2]} for row in cursor.fetchall()]
+        return analytics_response({
+            'totals': {
+                'requests': int(total or 0),
+                'accepted': int(accepted or 0),
+                'rejected': int(rejected or 0),
+                'completed': int(completed or 0),
+                'cancelled': int(cancelled or 0),
+                'acceptance_rate': round((accepted / total) * 100, 2) if total else None,
+                'completion_rate': round((completed / total) * 100, 2) if total else None,
+                'average_acceptance_hours': round(float(avg_acceptance_hours), 2) if avg_acceptance_hours is not None else None,
+                'completed_job_definition': "SolicitudServicios.Estado IN ('concluido', 'concluida', 'calificado')"
+            },
+            'series': {'created': make_zero_series(period, series_values)},
+            'distributions': {'by_state': by_state, 'by_category': by_category},
+            'rankings': {'top_publications': top_publications}
+        }, period)
+    except Exception:
+        log_exception(logger, 'admin_analytics_requests_error')
+        return api_error_response(500, 'No fue posible cargar analítica de solicitudes.')
+    finally:
+        conn.close()
+
+
+@app.route('/admin/analytics/payments', methods=['GET'])
+def admin_analytics_payments():
+    context, error = analytics_context()
+    if error:
+        return error
+    conn, cursor, period = context
+    try:
+        clauses = ["pa.CreadoEn >= ?", "pa.CreadoEn < ?"]
+        params = [period['start'], period['end']]
+        if period['filters']['payment_status']:
+            clauses.append("LOWER(e.Nombre) = LOWER(?)")
+            params.append(period['filters']['payment_status'])
+        if period['filters']['payment_method']:
+            clauses.append("LOWER(mp.Nombre) = LOWER(?)")
+            params.append(period['filters']['payment_method'])
+        where = ' AND '.join(clauses)
+        joins = """
+            LEFT JOIN Estatus e ON pa.EstatusId = e.id
+            LEFT JOIN MetodosPago mp ON pa.MetodoId = mp.id
+            LEFT JOIN SolicitudesServicios s ON pa.SolicitudServicioId = s.id
+            LEFT JOIN Publicaciones p ON s.PublicacionId = p.id
+        """
+        row = cursor.execute(f"SELECT COUNT(*), COALESCE(SUM(pa.Monto), 0), AVG(CAST(pa.Monto AS float)) FROM Pagos pa {joins} WHERE {where}", params).fetchone()
+        by_state = distribution_rows(cursor, f"SELECT COALESCE(e.Nombre, 'sin_estado'), COUNT(*) FROM Pagos pa {joins} WHERE {where} GROUP BY e.Nombre ORDER BY COUNT(*) DESC", params)
+        by_method = distribution_rows(cursor, f"SELECT COALESCE(mp.Nombre, pa.Procesador, 'Sin método'), COUNT(*) FROM Pagos pa {joins} WHERE {where} GROUP BY COALESCE(mp.Nombre, pa.Procesador, 'Sin método') ORDER BY COUNT(*) DESC", params)
+        by_category = distribution_rows(cursor, f"SELECT COALESCE(p.Categoria, 'Sin categoría'), COALESCE(SUM(pa.Monto), 0) FROM Pagos pa {joins} WHERE {where} GROUP BY p.Categoria ORDER BY SUM(pa.Monto) DESC", params)
+        series_values = query_time_series(cursor, "Pagos pa", "pa.CreadoEn", period, aggregate="COALESCE(SUM(pa.Monto), 0)", joins=joins, where=' AND '.join(clauses[2:]), params=params[2:])
+        return analytics_response({
+            'totals': {
+                'payments': int(row[0] or 0),
+                'amount': float(row[1] or 0),
+                'average_ticket': round(float(row[2]), 2) if row[2] is not None else None
+            },
+            'series': {'amount': make_zero_series(period, series_values)},
+            'distributions': {'by_state': by_state, 'by_method': by_method, 'amount_by_category': by_category}
+        }, period)
+    except Exception:
+        log_exception(logger, 'admin_analytics_payments_error')
+        return api_error_response(500, 'No fue posible cargar analítica de pagos.')
+    finally:
+        conn.close()
+
+
+@app.route('/admin/analytics/reviews', methods=['GET'])
+def admin_analytics_reviews():
+    context, error = analytics_context()
+    if error:
+        return error
+    conn, cursor, period = context
+    try:
+        clauses = ["r.CreadoEn >= ?", "r.CreadoEn < ?"]
+        params = [period['start'], period['end']]
+        if period['filters']['category']:
+            clauses.append("LOWER(p.Categoria) = LOWER(?)")
+            params.append(period['filters']['category'])
+        where = ' AND '.join(clauses)
+        joins = "LEFT JOIN SolicitudesServicios s ON r.SolicitudServicioId = s.id LEFT JOIN Publicaciones p ON s.PublicacionId = p.id"
+        row = cursor.execute(f"SELECT COUNT(*), AVG(CAST(r.Calificacion AS float)) FROM Resenas r {joins} WHERE {where}", params).fetchone()
+        distribution = distribution_rows(cursor, f"SELECT CAST(r.Calificacion AS varchar(10)), COUNT(*) FROM Resenas r {joins} WHERE {where} GROUP BY r.Calificacion ORDER BY r.Calificacion", params)
+        by_category = distribution_rows(cursor, f"SELECT COALESCE(p.Categoria, 'Sin categoría'), AVG(CAST(r.Calificacion AS float)) FROM Resenas r {joins} WHERE {where} GROUP BY p.Categoria ORDER BY AVG(CAST(r.Calificacion AS float)) DESC", params)
+        series_values = query_time_series(cursor, "Resenas r", "r.CreadoEn", period, joins=joins, where=' AND '.join(clauses[2:]), params=params[2:])
+        missing_reviews = scalar(cursor, f"""
+            SELECT COUNT(*)
+            FROM SolicitudesServicios s
+            WHERE s.Estado IN ({','.join('?' for _ in COMPLETED_REQUEST_STATES)})
+              AND NOT EXISTS (SELECT 1 FROM Resenas r WHERE r.SolicitudServicioId = s.id)
+        """, tuple(COMPLETED_REQUEST_STATES))
+        return analytics_response({
+            'totals': {
+                'reviews': int(row[0] or 0),
+                'average_rating': round(float(row[1]), 2) if row[1] is not None else None,
+                'completed_jobs_without_review': int(missing_reviews or 0)
+            },
+            'series': {'reviews': make_zero_series(period, series_values)},
+            'distributions': {'by_stars': distribution, 'average_by_category': by_category}
+        }, period)
+    except Exception:
+        log_exception(logger, 'admin_analytics_reviews_error')
+        return api_error_response(500, 'No fue posible cargar analítica de reseñas.')
+    finally:
+        conn.close()
+
+
+@app.route('/admin/analytics/marketplace', methods=['GET'])
+def admin_analytics_marketplace():
+    context, error = analytics_context()
+    if error:
+        return error
+    conn, cursor, period = context
+    try:
+        category_filter = "WHERE LOWER(c.Categoria) = LOWER(?)" if period['filters']['category'] else ""
+        category_params = (period['filters']['category'],) if period['filters']['category'] else ()
+        cursor.execute(f"""
+            SELECT c.Categoria,
+                   COALESCE(oferta.TotalOferta, 0) AS Oferta,
+                   COALESCE(demanda.TotalDemanda, 0) AS Demanda,
+                   COALESCE(precio.PrecioPromedio, 0) AS PrecioPromedio
+            FROM (
+                SELECT Nombre AS Categoria FROM Categorias WHERE Activa = 1
+                UNION SELECT DISTINCT Categoria FROM Publicaciones WHERE Categoria IS NOT NULL
+            ) c
+            LEFT JOIN (
+                SELECT Categoria, COUNT(*) TotalOferta
+                FROM Publicaciones
+                WHERE Activa = 1
+                GROUP BY Categoria
+            ) oferta ON c.Categoria = oferta.Categoria
+            LEFT JOIN (
+                SELECT p.Categoria, COUNT(*) TotalDemanda
+                FROM SolicitudesServicios s
+                INNER JOIN Publicaciones p ON s.PublicacionId = p.id
+                WHERE s.FechaSolicitud >= ? AND s.FechaSolicitud < ?
+                GROUP BY p.Categoria
+            ) demanda ON c.Categoria = demanda.Categoria
+            LEFT JOIN (
+                SELECT Categoria, AVG(CAST(Precio AS float)) PrecioPromedio
+                FROM Publicaciones
+                WHERE Precio IS NOT NULL
+                GROUP BY Categoria
+            ) precio ON c.Categoria = precio.Categoria
+            {category_filter}
+            ORDER BY COALESCE(demanda.TotalDemanda, 0) DESC, c.Categoria
+        """, (period['start'], period['end'], *category_params))
+        categories = [{
+            'category': row[0],
+            'offer': int(row[1] or 0),
+            'demand': int(row[2] or 0),
+            'demand_offer_ratio': round(float(row[2] or 0) / float(row[1] or 1), 2) if row[1] else None,
+            'average_price': round(float(row[3] or 0), 2) if row[3] else None
+        } for row in cursor.fetchall()]
+        providers_active = scalar(cursor, "SELECT COUNT(DISTINCT UsuarioId) FROM Publicaciones WHERE Activa = 1")
+        providers_without_activity = scalar(cursor, "SELECT COUNT(*) FROM Prestadores pr WHERE NOT EXISTS (SELECT 1 FROM Publicaciones p WHERE p.UsuarioId = pr.UsuarioId)")
+        return analytics_response({
+            'categories': categories,
+            'totals': {
+                'active_providers': int(providers_active or 0),
+                'providers_without_publications': int(providers_without_activity or 0),
+                'categories_without_offer': sum(1 for item in categories if item['offer'] == 0),
+                'categories_without_demand': sum(1 for item in categories if item['demand'] == 0)
+            }
+        }, period)
+    except Exception:
+        log_exception(logger, 'admin_analytics_marketplace_error')
+        return api_error_response(500, 'No fue posible cargar analítica de marketplace.')
+    finally:
+        conn.close()
+
+
+@app.route('/admin/analytics/moderation', methods=['GET'])
+def admin_analytics_moderation():
+    context, error = analytics_context()
+    if error:
+        return error
+    conn, cursor, period = context
+    try:
+        admin_id = parse_positive_filter_id('admin_id')
+        admin_filter = "AND b.ActorId = ?" if admin_id else ""
+        admin_params = (admin_id,) if admin_id else ()
+        complaints_total = scalar(cursor, "SELECT COUNT(*) FROM Quejas WHERE CreadoEn >= ? AND CreadoEn < ?", (period['start'], period['end']))
+        complaints_pending = scalar(cursor, "SELECT COUNT(*) FROM Quejas WHERE Estado = 'pendiente'")
+        complaints_resolved = scalar(cursor, "SELECT COUNT(*) FROM Quejas WHERE Estado IN ('resuelta', 'cerrada') AND ActualizadoEn >= ? AND ActualizadoEn < ?", (period['start'], period['end']))
+        alerts_unread = scalar(cursor, "SELECT COUNT(*) FROM AlertasSistema WHERE Leida = 0")
+        disabled_users = scalar(cursor, "SELECT COUNT(*) FROM Usuarios WHERE Activo = 0")
+        moderated_publications = scalar(cursor, "SELECT COUNT(*) FROM PublicacionRevisiones WHERE CreadoEn >= ? AND CreadoEn < ?", (period['start'], period['end']))
+        avg_review_hours = scalar(cursor, "SELECT AVG(CAST(DATEDIFF(minute, CreadoEn, RevisadoEn) AS float)) / 60.0 FROM PublicacionVersiones WHERE RevisadoEn >= ? AND RevisadoEn < ? AND CreadoEn IS NOT NULL", (period['start'], period['end']))
+        events_by_type = distribution_rows(cursor, f"SELECT b.TipoEvento, COUNT(*) FROM BitacoraAdmin b WHERE b.CreadoEn >= ? AND b.CreadoEn < ? {admin_filter} GROUP BY b.TipoEvento ORDER BY COUNT(*) DESC", (period['start'], period['end'], *admin_params))
+        actions_by_admin = []
+        cursor.execute("""
+            SELECT TOP (?) COALESCE(u.Email, 'Sistema'), COUNT(*) AS Total
+            FROM BitacoraAdmin b
+            LEFT JOIN Usuarios u ON b.ActorId = u.id
+            WHERE b.CreadoEn >= ? AND b.CreadoEn < ?
+            GROUP BY u.Email
+            ORDER BY Total DESC
+        """, (parse_analytics_limit(), period['start'], period['end']))
+        actions_by_admin = [{'label': row[0], 'value': row[1]} for row in cursor.fetchall()]
+        series_values = query_time_series(cursor, "BitacoraAdmin b", "b.CreadoEn", period, where=admin_filter[4:] if admin_filter else "", params=admin_params)
+        return analytics_response({
+            'totals': {
+                'complaints': int(complaints_total or 0),
+                'complaints_pending': int(complaints_pending or 0),
+                'complaints_resolved': int(complaints_resolved or 0),
+                'alerts_unread': int(alerts_unread or 0),
+                'disabled_users': int(disabled_users or 0),
+                'moderated_publications': int(moderated_publications or 0),
+                'average_review_hours': round(float(avg_review_hours), 2) if avg_review_hours is not None else None
+            },
+            'series': {'events': make_zero_series(period, series_values)},
+            'distributions': {'events_by_type': events_by_type},
+            'rankings': {'actions_by_admin': actions_by_admin}
+        }, period)
+    except Exception:
+        log_exception(logger, 'admin_analytics_moderation_error')
+        return api_error_response(500, 'No fue posible cargar analítica de moderación.')
+    finally:
+        conn.close()
+
+
 @app.route('/admin/resumen', methods=['GET'])
 def admin_resumen():
     unauthorized = require_admin_session()

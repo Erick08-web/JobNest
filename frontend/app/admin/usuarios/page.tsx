@@ -1,19 +1,15 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { Power, Search, UsersRound } from "lucide-react";
-import { CompactDashboardRail } from "../../components/SessionNav";
+import { AdminAlert, AdminBadge, AdminButton, AdminCard, AdminEmptyState, AdminPageHeader, AdminSearch, AdminSectionTitle, AdminSelect, AdminShell, AdminSkeleton, AdminToolbar, formatAdminDate, humanizeAdminText, statusTone } from "../components/AdminUI";
 import { fetchCurrentUser, listAdminUsers, toggleAdminUser, type AdminUser } from "../../lib/api";
-
-function statusClass(value: boolean | string) {
-  if (typeof value === "boolean") return value ? "aceptada" : "rechazada";
-  return value.toLowerCase().replace(/\s+/g, "-");
-}
 
 export default function AdminUsersPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [query, setQuery] = useState("");
+  const [role, setRole] = useState("todos");
+  const [status, setStatus] = useState("todos");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [workingId, setWorkingId] = useState<number | null>(null);
@@ -26,7 +22,7 @@ export default function AdminUsersPage() {
       if (!current || current.tipo_usuario !== "administrador") throw new Error("Acceso reservado para administradores.");
       setUsers(await listAdminUsers());
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "No fue posible cargar usuarios.");
+      setMessage(err instanceof Error ? err.message : "No pudimos cargar la información. Inténtalo nuevamente.");
     } finally {
       setLoading(false);
     }
@@ -36,11 +32,16 @@ export default function AdminUsersPage() {
 
   const filteredUsers = useMemo(() => {
     const term = query.trim().toLowerCase();
-    if (!term) return users;
-    return users.filter((item) => `${item.nombre} ${item.email} ${item.tipo_usuario}`.toLowerCase().includes(term));
-  }, [query, users]);
+    return users.filter((item) => {
+      const matchesTerm = !term || `${item.nombre} ${item.email} ${item.tipo_usuario}`.toLowerCase().includes(term);
+      const matchesRole = role === "todos" || item.tipo_usuario === role;
+      const matchesStatus = status === "todos" || (status === "activo" ? item.activo : !item.activo);
+      return matchesTerm && matchesRole && matchesStatus;
+    });
+  }, [query, role, status, users]);
 
-  const toggleUser = async (id: number) => {
+  const toggleUser = async (id: number, active: boolean) => {
+    if (!window.confirm(`¿Confirmas ${active ? "desactivar" : "activar"} esta cuenta?`)) return;
     setWorkingId(id);
     setMessage("");
     try {
@@ -48,42 +49,52 @@ export default function AdminUsersPage() {
       setMessage(result.message || "Usuario actualizado.");
       await load();
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "No fue posible actualizar el usuario.");
+      setMessage(err instanceof Error ? err.message : "No pudimos completar la acción. Inténtalo nuevamente.");
     } finally {
       setWorkingId(null);
     }
   };
 
   return (
-    <main className="dashboardV2 adminDashboard">
-      <CompactDashboardRail role="administrador" />
-      <section className="dashboardCanvas">
-        <header className="adminSectionHeader">
-          <div><span className="sectionKicker"><UsersRound size={16} /> Cuentas</span><h1>Usuarios</h1><p>Consulta clientes, prestadores, administradores y estado de acceso.</p></div>
-          <Link href="/admin">Resumen</Link>
-        </header>
-
-        {message ? <div className="formAlert moduleAlert">{message}</div> : null}
-        {loading ? <div className="portfolioEmpty"><Search size={30} /><h3>Cargando usuarios...</h3></div> : null}
-
-        <section className="dashPanel adminTablePanel">
-          <div className="sectionTitleRow">
-            <div><span className="sectionKicker">Directorio</span><h2>Cuentas registradas</h2></div>
-            <label className="adminSearch"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Buscar usuario" /></label>
-          </div>
-          <div className="adminTable">
+    <AdminShell title="Usuarios" description="Directorio de clientes, prestadores y administradores.">
+      <AdminPageHeader eyebrow="Cuentas" title="Usuarios registrados" description="Consulta roles, estado de acceso y actividad básica sin mostrar datos internos como protagonistas." icon={UsersRound} />
+      {message ? <AdminAlert tone={message.includes("actualizado") ? "success" : "danger"}>{message}</AdminAlert> : null}
+      {loading ? <AdminSkeleton rows={5} /> : (
+        <AdminCard>
+          <AdminSectionTitle eyebrow="Directorio" title={`${filteredUsers.length} cuentas`} />
+          <AdminToolbar>
+            <AdminSearch value={query} onChange={setQuery} placeholder="Buscar por nombre, correo o rol" />
+            <AdminSelect value={role} onChange={setRole} label="Rol">
+              <option value="todos">Todos</option>
+              <option value="cliente">Cliente</option>
+              <option value="prestador">Prestador</option>
+              <option value="administrador">Administrador</option>
+            </AdminSelect>
+            <AdminSelect value={status} onChange={setStatus} label="Estado">
+              <option value="todos">Todos</option>
+              <option value="activo">Activos</option>
+              <option value="inactivo">Inactivos</option>
+            </AdminSelect>
+          </AdminToolbar>
+          <div className="adminList">
             {filteredUsers.map((item) => (
-              <article className="adminTableRow" key={item.id}>
-                <div><strong>{item.nombre}</strong><span>{item.email}</span></div>
-                <span className={`statusPill ${item.tipo_usuario}`}>{item.tipo_usuario}</span>
-                <span className={`statusPill ${statusClass(item.activo)}`}>{item.activo ? "Activo" : "Inactivo"}</span>
-                <button type="button" onClick={() => void toggleUser(item.id)} disabled={workingId === item.id}><Power size={16} /> {item.activo ? "Desactivar" : "Activar"}</button>
+              <article className="adminRow" key={item.id}>
+                <div className="adminRowMain">
+                  <strong>{item.nombre || "Sin nombre registrado"}</strong>
+                  <span>{item.email}</span>
+                  <span>Registro: {formatAdminDate(item.creado_en, true)} · Último acceso: {item.ultimo_login ? formatAdminDate(item.ultimo_login, true) : "Sin acceso reciente"}</span>
+                </div>
+                <AdminBadge tone={statusTone(item.tipo_usuario)}>{humanizeAdminText(item.tipo_usuario)}</AdminBadge>
+                <AdminBadge tone={statusTone(item.activo)}>{item.activo ? "Activo" : "Inactivo"}</AdminBadge>
+                <AdminButton type="button" tone={item.activo ? "danger" : "success"} onClick={() => void toggleUser(item.id, item.activo)} disabled={workingId === item.id}>
+                  <Power size={16} /> {item.activo ? "Desactivar" : "Activar"}
+                </AdminButton>
               </article>
             ))}
-            {!filteredUsers.length ? <p className="mutedPanelText">No hay usuarios con ese filtro.</p> : null}
+            {!filteredUsers.length ? <AdminEmptyState icon={Search} title="No se encontraron usuarios" description="Ajusta la búsqueda o limpia los filtros para ver más cuentas." /> : null}
           </div>
-        </section>
-      </section>
-    </main>
+        </AdminCard>
+      )}
+    </AdminShell>
   );
 }

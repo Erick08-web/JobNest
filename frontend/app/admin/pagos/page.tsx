@@ -1,18 +1,9 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState } from "react";
-import { CreditCard, Search } from "lucide-react";
-import { CompactDashboardRail } from "../../components/SessionNav";
+import { CreditCard, RefreshCw, Search } from "lucide-react";
+import { AdminAlert, AdminBadge, AdminButton, AdminCard, AdminEmptyState, AdminPageHeader, AdminSearch, AdminSectionTitle, AdminSelect, AdminShell, AdminSkeleton, AdminToolbar, formatAdminDate, formatAdminMoney, humanizeAdminText, statusTone } from "../components/AdminUI";
 import { fetchCurrentUser, listAdminPayments, type AdminPayment } from "../../lib/api";
-
-function money(value: number) {
-  return `$${value.toLocaleString("es-MX")}`;
-}
-
-function statusClass(value: string) {
-  return value.toLowerCase().replace(/\s+/g, "-");
-}
 
 export default function AdminPaymentsPage() {
   const [payments, setPayments] = useState<AdminPayment[]>([]);
@@ -35,7 +26,7 @@ export default function AdminPaymentsPage() {
       setPayments(data.pagos ?? []);
       setTotal(data.total ?? 0);
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "No fue posible cargar pagos.");
+      setMessage(err instanceof Error ? err.message : "No pudimos cargar la información. Inténtalo nuevamente.");
     } finally {
       setLoading(false);
     }
@@ -44,46 +35,39 @@ export default function AdminPaymentsPage() {
   useEffect(() => { void load(); }, []);
 
   return (
-    <main className="dashboardV2 adminDashboard">
-      <CompactDashboardRail role="administrador" />
-      <section className="dashboardCanvas">
-        <header className="adminSectionHeader">
-          <div><span className="sectionKicker"><CreditCard size={16} /> Pagos</span><h1>Control de pagos</h1><p>Consulta pagos internos registrados, su estado y el servicio relacionado.</p></div>
-          <Link href="/admin">Resumen</Link>
-        </header>
-
-        {message ? <div className="formAlert moduleAlert">{message}</div> : null}
-        {loading ? <div className="portfolioEmpty"><Search size={30} /><h3>Cargando pagos...</h3></div> : null}
-
-        <section className="dashPanel adminTablePanel">
-          <div className="sectionTitleRow">
-            <div><span className="sectionKicker">Registros</span><h2>{total} pagos encontrados</h2></div>
-            <button type="button" className="smallGhostButton" onClick={() => void load()}>Buscar</button>
-          </div>
-          <div className="adminFiltersRow">
-            <label className="adminSearch wide"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cliente, prestador, referencia o publicación" /></label>
-            <select className="adminFilter" value={status} onChange={(event) => setStatus(event.target.value)}>
-              <option value="">Todos los estados</option>
+    <AdminShell title="Pagos" description="Consulta de pagos internos y servicios relacionados.">
+      <AdminPageHeader eyebrow="Finanzas" title="Control de pagos" description="Revisa monto, método, estado, solicitud y fecha de cada registro financiero." icon={CreditCard} actions={<AdminButton onClick={() => void load()}><RefreshCw size={16} /> Buscar</AdminButton>} />
+      {message ? <AdminAlert>{message}</AdminAlert> : null}
+      {loading ? <AdminSkeleton rows={5} /> : (
+        <AdminCard>
+          <AdminSectionTitle eyebrow="Registros" title={`${total} pagos encontrados`} />
+          <AdminToolbar>
+            <AdminSearch value={query} onChange={setQuery} placeholder="Cliente, prestador, referencia o publicación" />
+            <AdminSelect value={status} onChange={setStatus} label="Estado">
+              <option value="">Todos</option>
               <option value="pendiente">Pendiente</option>
               <option value="completado">Completado</option>
               <option value="rechazado">Rechazado</option>
               <option value="cancelado">Cancelado</option>
               <option value="reembolsado">Reembolsado</option>
-            </select>
-          </div>
-          <div className="adminTable compact adminSpacedTable">
+            </AdminSelect>
+          </AdminToolbar>
+          <div className="adminList">
             {payments.map((item) => (
-              <article className="adminTableRow paymentRow" key={item.id}>
-                <div><strong>{money(item.monto)} {item.moneda}</strong><span>{item.publicacion_titulo || "Servicio"} · Solicitud #{item.solicitud_id ?? "-"}</span></div>
-                <span className={`statusPill ${statusClass(item.estado)}`}>{item.estado}</span>
-                <span>{item.metodo || item.procesador}</span>
-                <span>{item.creado_en}</span>
+              <article className="adminRow" key={item.id}>
+                <div className="adminRowMain">
+                  <strong>{formatAdminMoney(item.monto)} {item.moneda}</strong>
+                  <span>{item.publicacion_titulo || "Servicio"} · Solicitud #{item.solicitud_id ?? "-"}</span>
+                  <span>{item.metodo || item.procesador || "Sin método"} · Creado: {formatAdminDate(item.creado_en, true)}{item.pagado_en ? ` · Pagado: ${formatAdminDate(item.pagado_en, true)}` : ""}</span>
+                </div>
+                <AdminBadge tone={statusTone(item.estado)}>{humanizeAdminText(item.estado)}</AdminBadge>
+                <AdminBadge tone={statusTone(item.estado_solicitud)}>{humanizeAdminText(item.estado_solicitud)}</AdminBadge>
               </article>
             ))}
-            {!payments.length && !loading ? <p className="mutedPanelText">No hay pagos con esos filtros.</p> : null}
+            {!payments.length ? <AdminEmptyState icon={Search} title="No hay pagos para mostrar" description="Cuando existan pagos registrados, aparecerán aquí con estado, método y solicitud." /> : null}
           </div>
-        </section>
-      </section>
-    </main>
+        </AdminCard>
+      )}
+    </AdminShell>
   );
 }

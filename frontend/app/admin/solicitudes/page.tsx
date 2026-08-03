@@ -1,22 +1,15 @@
 "use client";
 
-import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { BriefcaseBusiness, Search } from "lucide-react";
-import { CompactDashboardRail } from "../../components/SessionNav";
+import { AdminAlert, AdminBadge, AdminCard, AdminEmptyState, AdminPageHeader, AdminSearch, AdminSectionTitle, AdminSelect, AdminShell, AdminSkeleton, AdminToolbar, formatAdminDate, formatAdminMoney, humanizeAdminText, statusTone } from "../components/AdminUI";
 import { fetchCurrentUser, getAdminSummary, listAdminRequests, type AdminRequest, type AdminSummary } from "../../lib/api";
-
-function money(value: number) {
-  return `$${value.toLocaleString("es-MX")}`;
-}
-
-function statusClass(value: string) {
-  return value.toLowerCase().replace(/\s+/g, "-");
-}
 
 export default function AdminRequestsPage() {
   const [requests, setRequests] = useState<AdminRequest[]>([]);
   const [summary, setSummary] = useState<AdminSummary | null>(null);
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("todos");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -31,7 +24,7 @@ export default function AdminRequestsPage() {
         setRequests(requestItems);
         setSummary(summaryData);
       } catch (err) {
-        if (mounted) setMessage(err instanceof Error ? err.message : "No fue posible cargar solicitudes.");
+        if (mounted) setMessage(err instanceof Error ? err.message : "No pudimos cargar la información. Inténtalo nuevamente.");
       } finally {
         if (mounted) setLoading(false);
       }
@@ -40,35 +33,56 @@ export default function AdminRequestsPage() {
     return () => { mounted = false; };
   }, []);
 
+  const filtered = useMemo(() => {
+    const term = query.trim().toLowerCase();
+    return requests.filter((item) => {
+      const matchesTerm = !term || `${item.titulo_publicacion} ${item.cliente_nombre} ${item.prestador_nombre} ${item.estado}`.toLowerCase().includes(term);
+      const matchesStatus = status === "todos" || item.estado === status;
+      return matchesTerm && matchesStatus;
+    });
+  }, [query, requests, status]);
+
+  const statuses = Array.from(new Set(requests.map((item) => item.estado).filter(Boolean)));
+
   return (
-    <main className="dashboardV2 adminDashboard">
-      <CompactDashboardRail role="administrador" />
-      <section className="dashboardCanvas">
-        <header className="adminSectionHeader">
-          <div><span className="sectionKicker"><BriefcaseBusiness size={16} /> Servicios</span><h1>Solicitudes</h1><p>Seguimiento de cliente, prestador, estado del servicio y precio relacionado.</p></div>
-          <Link href="/admin">Resumen</Link>
-        </header>
+    <AdminShell title="Solicitudes" description="Seguimiento del proceso cliente-prestador.">
+      <AdminPageHeader eyebrow="Servicios" title="Solicitudes de servicio" description="Visualiza cliente, prestador, servicio, estado y fecha sin alterar el flujo operativo." icon={BriefcaseBusiness} />
+      {message ? <AdminAlert>{message}</AdminAlert> : null}
+      {loading ? <AdminSkeleton rows={5} /> : (
+        <>
+          <AdminCard>
+            <AdminSectionTitle eyebrow="Estados" title="Resumen de solicitudes" />
+            <div className="adminStateList">
+              {(summary?.solicitudes_por_estado ?? []).map((item) => <AdminBadge tone={statusTone(item.estado)} key={item.estado}>{humanizeAdminText(item.estado)}: {item.total}</AdminBadge>)}
+              {!summary?.solicitudes_por_estado?.length ? <AdminBadge>Sin estados registrados</AdminBadge> : null}
+            </div>
+          </AdminCard>
 
-        {message ? <div className="formAlert moduleAlert">{message}</div> : null}
-        {loading ? <div className="portfolioEmpty"><Search size={30} /><h3>Cargando solicitudes...</h3></div> : null}
-
-        <section className="dashPanel adminTablePanel">
-          <div className="sectionTitleRow"><div><span className="sectionKicker">Proceso</span><h2>Actividad de servicios</h2></div></div>
-          <div className="adminStateList">
-            {(summary?.solicitudes_por_estado ?? []).map((item) => <span key={item.estado}>{item.estado}: <strong>{item.total}</strong></span>)}
-          </div>
-          <div className="adminTable compact adminSpacedTable">
-            {requests.map((item) => (
-              <article className="adminTableRow requestRow" key={item.id}>
-                <div><strong>{item.titulo_publicacion}</strong><span>{item.cliente_nombre || "Cliente"} a {item.prestador_nombre || "Prestador"} · {item.precio ? money(item.precio) : "Sin precio"}</span></div>
-                <span className={`statusPill ${statusClass(item.estado)}`}>{item.estado}</span>
-                <span>{item.fecha_servicio || item.fecha_solicitud}</span>
-              </article>
-            ))}
-            {!requests.length ? <p className="mutedPanelText">Aún no hay solicitudes.</p> : null}
-          </div>
-        </section>
-      </section>
-    </main>
+          <AdminCard>
+            <AdminSectionTitle eyebrow="Proceso" title={`${filtered.length} solicitudes`} />
+            <AdminToolbar>
+              <AdminSearch value={query} onChange={setQuery} placeholder="Buscar por servicio, cliente o prestador" />
+              <AdminSelect value={status} onChange={setStatus} label="Estado">
+                <option value="todos">Todos</option>
+                {statuses.map((item) => <option value={item} key={item}>{humanizeAdminText(item)}</option>)}
+              </AdminSelect>
+            </AdminToolbar>
+            <div className="adminList">
+              {filtered.map((item) => (
+                <article className="adminRow" key={item.id}>
+                  <div className="adminRowMain">
+                    <strong>{item.titulo_publicacion || "Servicio sin título"}</strong>
+                    <span>{item.cliente_nombre || "Cliente"} → {item.prestador_nombre || "Prestador"}</span>
+                    <span>{item.precio ? formatAdminMoney(item.precio) : "Sin precio"} · Servicio: {item.fecha_servicio ? formatAdminDate(item.fecha_servicio, true) : "Sin fecha programada"} · Solicitud: {formatAdminDate(item.fecha_solicitud, true)}</span>
+                  </div>
+                  <AdminBadge tone={statusTone(item.estado)}>{humanizeAdminText(item.estado)}</AdminBadge>
+                </article>
+              ))}
+              {!filtered.length ? <AdminEmptyState icon={Search} title="No hay solicitudes" description="Cuando existan servicios solicitados, aparecerán aquí con su estado y relación cliente-prestador." /> : null}
+            </div>
+          </AdminCard>
+        </>
+      )}
+    </AdminShell>
   );
 }
