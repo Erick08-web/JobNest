@@ -60,9 +60,27 @@ export function formatAdminMoney(value?: number | null) {
 }
 
 export function formatAdminDate(value?: string | null, compact = false) {
-  if (!value) return "Sin fecha";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
+  if (!value) return "Sin registro";
+  const raw = value.trim();
+  const legacy = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{2}):(\d{2}))?$/);
+  const isoDateOnly = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  let date: Date;
+
+  if (legacy) {
+    const [, day, month, year, hour, minute] = legacy;
+    date = hour
+      ? new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute)))
+      : new Date(Number(year), Number(month) - 1, Number(day), 12, 0);
+  } else if (isoDateOnly) {
+    const [, year, month, day] = isoDateOnly;
+    date = new Date(Number(year), Number(month) - 1, Number(day), 12, 0);
+  } else {
+    const hasExplicitZone = /(?:z|[+-]\d{2}:?\d{2})$/i.test(raw);
+    const normalized = hasExplicitZone || !raw.includes("T") ? raw : `${raw}Z`;
+    date = new Date(normalized);
+  }
+
+  if (Number.isNaN(date.getTime())) return "Sin registro";
   return new Intl.DateTimeFormat("es-MX", {
     dateStyle: compact ? "medium" : "long",
     timeStyle: compact ? "short" : "short",
