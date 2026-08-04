@@ -1779,38 +1779,52 @@ def guardar_imagenes_version(cursor, publicacion_id, version_id, user_id, imagen
 
     os.makedirs(PUBLICACION_UPLOAD_FOLDER, exist_ok=True)
     guardadas = []
-    for index, imagen in enumerate(imagenes, start=existentes):
-        valida, mensaje, meta = validar_imagen_publicacion(imagen)
-        if not valida:
-            raise ValueError(mensaje)
+    archivos_guardados = []
+    try:
+        for index, imagen in enumerate(imagenes, start=existentes):
+            valida, mensaje, meta = validar_imagen_publicacion(imagen)
+            if not valida:
+                raise ValueError(mensaje)
 
-        nombre_final = f"{publicacion_id}_{version_id}_{uuid.uuid4().hex}.{meta['extension']}"
-        ruta_archivo = os.path.join(PUBLICACION_UPLOAD_FOLDER, nombre_final)
-        imagen.save(ruta_archivo)
-        ruta_relativa = f"/static/uploads/publicaciones/{nombre_final}"
-        cursor.execute("""
-            INSERT INTO PublicacionImagenes (
-                PublicacionId, VersionId, UsuarioId, ImagenUrl, NombreArchivo, MimeType,
-                TamanoBytes, Posicion, EsPrincipal, EstadoRevision
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pendiente')
-        """, (
-            publicacion_id,
-            version_id,
-            user_id,
-            ruta_relativa,
-            nombre_final,
-            meta['mime'],
-            meta['size'],
-            index,
-            1 if index == 0 else 0
-        ))
-        cursor.execute("SELECT SCOPE_IDENTITY()")
-        imagen_id = int(cursor.fetchone()[0])
-        guardadas.append({'id': imagen_id, 'url': ruta_relativa})
-        audit_event(cursor, 'imagen_subida', 'PublicacionImagenes', imagen_id,
-                    f'Imagen subida para publicación {publicacion_id}, versión {version_id}.',
-                    usuario_id=user_id, actor_id=user_id)
+            nombre_final = f"{publicacion_id}_{version_id}_{uuid.uuid4().hex}.{meta['extension']}"
+            ruta_archivo = os.path.join(PUBLICACION_UPLOAD_FOLDER, nombre_final)
+            imagen.save(ruta_archivo)
+            archivos_guardados.append(ruta_archivo)
+            ruta_relativa = f"/static/uploads/publicaciones/{nombre_final}"
+            cursor.execute("""
+                INSERT INTO PublicacionImagenes (
+                    PublicacionId, VersionId, UsuarioId, ImagenUrl, NombreArchivo, MimeType,
+                    TamanoBytes, Posicion, EsPrincipal, EstadoRevision
+                )
+                OUTPUT INSERTED.id
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pendiente')
+            """, (
+                publicacion_id,
+                version_id,
+                user_id,
+                ruta_relativa,
+                nombre_final,
+                meta['mime'],
+                meta['size'],
+                index,
+                1 if index == 0 else 0
+            ))
+            imagen_row = cursor.fetchone()
+            if not imagen_row or imagen_row[0] is None:
+                raise RuntimeError('No fue posible obtener el identificador de la imagen creada.')
+            imagen_id = int(imagen_row[0])
+            guardadas.append({'id': imagen_id, 'url': ruta_relativa})
+            audit_event(cursor, 'imagen_subida', 'PublicacionImagenes', imagen_id,
+                        f'Imagen subida para publicación {publicacion_id}, versión {version_id}.',
+                        usuario_id=user_id, actor_id=user_id)
+    except Exception:
+        for ruta_guardada in archivos_guardados:
+            try:
+                if os.path.isfile(ruta_guardada):
+                    os.remove(ruta_guardada)
+            except OSError:
+                logger.warning('publication_image_cleanup_failed', extra={'event': 'publication.image.cleanup_failed'})
+        raise
     return guardadas
 
 
@@ -3996,18 +4010,22 @@ def mobile_crear_publicacion():
             return validation_response(errors)
         imagenes = request.files.getlist('imagenes')
 
-        cursor.execute("""
+        sql_insert = """
             INSERT INTO Publicaciones (UsuarioId, Titulo, Descripcion, Categoria, Precio, Ubicacion,
                                        Experiencia, Habilidades, Disponibilidad, IncluyeMateriales, TipoPrecio,
                                        Activa, EstadoRevision, ComentarioRevision)
             OUTPUT INSERTED.id
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pendiente_revision', NULL)
-        """, (
+        """
+        cursor.execute(sql_insert, (
             user_id, datos['titulo'], datos['descripcion'], datos['categoria'], datos['precio'],
             datos['ubicacion'], datos['experiencia'], datos['habilidades'], datos['disponibilidad'],
             datos['incluye_materiales'], datos['tipo_precio']
         ))
-        nueva_publicacion_id = int(cursor.fetchone()[0])
+        publicacion_row = cursor.fetchone()
+        if not publicacion_row or publicacion_row[0] is None:
+            raise RuntimeError('No fue posible obtener el identificador de la publicación creada.')
+        nueva_publicacion_id = int(publicacion_row[0])
         version_id = crear_version_publicacion(cursor, nueva_publicacion_id, user_id, datos)
         guardar_imagenes_version(cursor, nueva_publicacion_id, version_id, user_id, imagenes)
         audit_event(cursor, 'publicacion_enviada_revision', 'Publicaciones', nueva_publicacion_id,
@@ -4034,7 +4052,7 @@ def mobile_crear_publicacion():
         if conn:
             conn.rollback()
         print(f"Error inesperado al crear publicación móvil: {e}")
-        return jsonify({'success': False, 'message': 'Ocurrió un error inesperado.'}), 500
+        return jsonify({'success': False, 'message': 'No pudimos publicar el servicio. Inténtalo nuevamente.'}), 500
     finally:
         if conn:
             conn.close()
