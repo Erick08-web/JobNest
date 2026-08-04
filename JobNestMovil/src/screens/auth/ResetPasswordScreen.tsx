@@ -44,8 +44,8 @@ export function ResetPasswordScreen({ token: initialToken, onBack, onRequestNew 
   };
 
   return (
-    <AuthCard title="Nueva contraseña" subtitle="Usa el token del enlace que recibiste.">
-      <Field label="Token" value={token} onChangeText={(value) => { setToken(value); setErrors((current) => ({ ...current, token: undefined })); }} autoCapitalize="none" error={errors.token} />
+    <AuthCard title="Nueva contraseña" subtitle="Usa el código del enlace que recibiste.">
+      <Field label="Código del enlace" value={token} onChangeText={(value) => { setToken(value); setErrors((current) => ({ ...current, token: undefined })); }} autoCapitalize="none" error={errors.token} />
       <Field label="Nueva contraseña" value={password} onChangeText={(value) => { setPassword(value); setErrors((current) => ({ ...current, password: undefined })); }} secureTextEntry error={errors.password} />
       <Field label="Confirmar contraseña" value={confirmation} onChangeText={(value) => { setConfirmation(value); setErrors((current) => ({ ...current, password_confirmation: undefined })); }} secureTextEntry error={errors.password_confirmation} />
       <PrimaryButton title={loading ? 'Guardando...' : 'Guardar contraseña'} onPress={handleSubmit} disabled={loading} />

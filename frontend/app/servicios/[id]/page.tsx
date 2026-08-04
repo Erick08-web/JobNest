@@ -18,15 +18,22 @@ import {
   Sparkles,
   Star
 } from "lucide-react";
-import { getPublication, getPublicationPortfolio, sendServiceRequest, type PortfolioWork, type Publication } from "../../lib/api";
+import { fetchCurrentUser, getPublication, getPublicationPortfolio, sendServiceRequest, type CurrentUser, type PortfolioWork, type Publication } from "../../lib/api";
 
 function splitTags(value?: string) {
   return (value || "").split(",").map((item) => item.trim()).filter(Boolean).slice(0, 8);
 }
 
+function assetUrl(value?: string | null) {
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value;
+  return value.startsWith("/api/backend") ? value : `/api/backend${value.startsWith("/") ? value : `/${value}`}`;
+}
+
 export default function ServiceProfilePage() {
   const params = useParams<{ id: string }>();
   const [publication, setPublication] = useState<Publication | null>(null);
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [portfolio, setPortfolio] = useState<PortfolioWork[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
@@ -35,13 +42,16 @@ export default function ServiceProfilePage() {
   const [hora, setHora] = useState("");
   const [sending, setSending] = useState(false);
 
-  useEffect(() => {
+  const loadProfile = () => {
     let mounted = true;
-    Promise.all([getPublication(params.id), getPublicationPortfolio(params.id).catch(() => [])])
-      .then(([publicationData, portfolioData]) => {
+    setLoading(true);
+    setMessage("");
+    Promise.all([getPublication(params.id), getPublicationPortfolio(params.id).catch(() => []), fetchCurrentUser()])
+      .then(([publicationData, portfolioData, userData]) => {
         if (!mounted) return;
         setPublication(publicationData);
         setPortfolio(portfolioData);
+        setCurrentUser(userData);
       })
       .catch((err) => {
         if (!mounted) return;
@@ -51,13 +61,28 @@ export default function ServiceProfilePage() {
         if (mounted) setLoading(false);
       });
     return () => { mounted = false; };
-  }, [params.id]);
+  };
+
+  useEffect(() => loadProfile(), [params.id]);
 
   const tags = useMemo(() => splitTags(publication?.habilidades), [publication?.habilidades]);
+  const galleryImages = useMemo(() => {
+    const values = publication?.imagenes?.length ? publication.imagenes : publication?.imagen_principal ? [publication.imagen_principal] : [];
+    return values.map(assetUrl).filter(Boolean);
+  }, [publication?.imagen_principal, publication?.imagenes]);
+  const isOwnPublication = Boolean(
+    publication?.prestador_email &&
+    currentUser?.correo &&
+    publication.prestador_email.toLowerCase() === currentUser.correo.toLowerCase()
+  );
 
   const handleRequest = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!publication) return;
+    if (isOwnPublication) {
+      setMessage("No puedes solicitar un servicio publicado por tu propia cuenta.");
+      return;
+    }
     setSending(true);
     setRequestMessage("");
     try {
@@ -78,7 +103,7 @@ export default function ServiceProfilePage() {
   }
 
   if (!publication) {
-    return <main className="profilePage"><div className="emptyResults serviceLoading"><ShieldCheck size={34} /><h3>{message}</h3><p>Inicia sesión para consultar este perfil profesional.</p><Link href="/login">Iniciar sesión</Link></div></main>;
+    return <main className="profilePage"><div className="emptyResults serviceLoading"><ShieldCheck size={34} /><h3>{message || "No fue posible cargar el perfil."}</h3><p>Inicia sesión para consultar este perfil profesional.</p><button type="button" onClick={loadProfile}>Reintentar</button><Link href="/login">Iniciar sesión</Link></div></main>;
   }
 
   return (
@@ -93,9 +118,16 @@ export default function ServiceProfilePage() {
       </header>
 
       <section className="profileHero">
-        <div className="profilePortrait realServicePortrait">
-          {publication.imagen_principal ? <img src={publication.imagen_principal} alt={publication.titulo} /> : null}
-          <span><ShieldCheck size={18} /> Perfil conectado a JobNest</span>
+        <div className="serviceMediaColumn">
+          <div className="profilePortrait realServicePortrait">
+            {galleryImages[0] ? <img src={galleryImages[0]} alt={publication.titulo} /> : null}
+            <span><ShieldCheck size={18} /> Perfil conectado a JobNest</span>
+          </div>
+          {galleryImages.length > 1 ? (
+            <div className="serviceGalleryStrip" aria-label="Fotos del servicio">
+              {galleryImages.map((image, index) => <img key={`${image}-${index}`} src={image} alt={`${publication.titulo} ${index + 1}`} />)}
+            </div>
+          ) : null}
         </div>
         <div className="profileIntro">
           <span className="eyebrow"><Sparkles size={16} /> Perfil profesional</span>
@@ -107,6 +139,7 @@ export default function ServiceProfilePage() {
             <span><MapPin size={18} /> {publication.ubicacion}</span>
             <span><ImageIcon size={18} /> {portfolio.length || "Sin"} trabajos en portafolio</span>
             <span><BriefcaseBusiness size={18} /> {publication.categoria}</span>
+            <span><Star size={18} fill="currentColor" /> {publication.promedio_calificacion ? `${publication.promedio_calificacion} (${publication.total_resenas || 0} reseñas)` : "Sin reseñas todavía"}</span>
           </div>
           <div className="profileActions">
             <a href="#contratar" className="primaryButton">Solicitar servicio</a>
@@ -120,12 +153,13 @@ export default function ServiceProfilePage() {
           <div><Clock3 size={18} /> {publication.disponibilidad || "A convenir"}</div>
           <div><CalendarDays size={18} /> Publicado el {publication.fecha_creacion}</div>
           <div><BadgeCheck size={18} /> {publication.incluye_materiales ? "Incluye materiales" : "Materiales a convenir"}</div>
+          {isOwnPublication ? <p className="requestNotice">No puedes solicitar un servicio publicado por tu propia cuenta.</p> : null}
           {message ? <p className="requestNotice">{message}</p> : null}
           <form className="requestForm" onSubmit={handleRequest}>
             <label><span>Fecha</span><input type="date" value={fecha} onChange={(event) => setFecha(event.target.value)} required /></label>
             <label><span>Hora</span><input type="time" value={hora} onChange={(event) => setHora(event.target.value)} /></label>
             <label><span>Mensaje</span><textarea value={requestMessage} onChange={(event) => setRequestMessage(event.target.value)} placeholder="Describe qué necesitas y cualquier detalle importante." /></label>
-            <button className="darkButton" disabled={sending}>{sending ? "Enviando..." : "Enviar solicitud"} <ChevronRight size={18} /></button>
+            <button className="darkButton" disabled={sending || isOwnPublication}>{sending ? "Enviando..." : "Enviar solicitud"} <ChevronRight size={18} /></button>
           </form>
         </aside>
       </section>

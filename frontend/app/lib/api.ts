@@ -23,6 +23,17 @@ export type Category = {
 const GENERIC_ACTION_ERROR = "No pudimos completar la acción. Inténtalo nuevamente.";
 const GENERIC_CONNECTION_ERROR = "No fue posible conectarnos en este momento.";
 const TECHNICAL_ERROR_PATTERNS = [
+  /traceback/i,
+  /nonetype/i,
+  /stack trace/i,
+  /invalid column/i,
+  /exception/i,
+  /python/i,
+  /flask/i,
+  /sql/i,
+  /jwt/i,
+  /secret/i,
+  /configur/i,
   /network request failed/i,
   /failed to fetch/i,
   /error\s*500/i,
@@ -146,6 +157,9 @@ export type Publication = {
   version_numero?: number;
   version_publica?: number | null;
   imagen_principal?: string | null;
+  imagenes?: string[];
+  promedio_calificacion?: number | null;
+  total_resenas?: number;
   prestador_nombre?: string;
   prestador_telefono?: string;
   prestador_foto?: string | null;
@@ -181,6 +195,12 @@ export type RequestItem = {
   cliente_nombre?: string;
   cliente_foto?: string | null;
   cliente_email?: string;
+};
+
+export type RequestHistoryEvent = {
+  titulo: string;
+  detalle: string;
+  fecha: string;
 };
 
 export async function listActivePublications() {
@@ -270,6 +290,18 @@ export async function markRequestDone(id: number) {
   return backendFetch(`/marcar_concluido/${id}`, { method: "POST" });
 }
 
+export async function cancelRequest(id: number, motivo: string) {
+  return backendFetch(`/cancelar_solicitud/${id}`, {
+    method: "POST",
+    body: JSON.stringify({ motivo })
+  });
+}
+
+export async function listRequestHistory(id: number) {
+  const data = await backendFetch<{ historial: RequestHistoryEvent[] }>(`/historial_solicitud/${id}`);
+  return data.historial ?? [];
+}
+
 export async function listConversations() {
   const data = await backendFetch<{ conversaciones: Conversation[] }>("/mis_conversaciones");
   return data.conversaciones ?? [];
@@ -356,6 +388,7 @@ export type CompletedService = {
   precio: number | null;
   mi_calificacion?: number | null;
   mi_comentario?: string | null;
+  mi_resena_fecha?: string | null;
   calificacion_recibida?: number | null;
   comentario_recibido?: string | null;
 };
@@ -469,6 +502,88 @@ export type AdminUser = {
   tipo_usuario: "cliente" | "prestador" | "administrador";
 };
 
+export type AdminUserDetail = {
+  usuario: AdminUser & {
+    telefono?: string;
+    foto_perfil?: string | null;
+    roles: string[];
+    prestador?: { verificado: boolean; rating_promedio: number | null; total_resenas: number } | null;
+  };
+  resumen: {
+    publicaciones: number;
+    solicitudes_cliente: number;
+    solicitudes_prestador: number;
+    pagos: number;
+    resenas_recibidas: number;
+    resenas_realizadas: number;
+    quejas: number;
+    eventos: number;
+  };
+  publicaciones: {
+    id: number;
+    titulo: string;
+    categoria: string;
+    precio: number | null;
+    activa: boolean;
+    estado_revision: PublicationState;
+    fecha_creacion: string;
+  }[];
+  solicitudes: {
+    id: number;
+    estado: string;
+    fecha_solicitud: string;
+    fecha_servicio: string;
+    titulo_publicacion: string;
+    cliente_email: string;
+    prestador_email: string;
+    rol_en_solicitud: "cliente" | "prestador";
+  }[];
+  pagos: {
+    id: number;
+    monto: number;
+    creado_en: string;
+    metodo: string;
+    estado: string;
+    titulo_publicacion: string;
+  }[];
+  resenas: {
+    id: number;
+    calificacion: number | null;
+    comentario: string;
+    creado_en: string;
+    revisor_email: string;
+    evaluado_email: string;
+    titulo_publicacion: string;
+    tipo: "realizada" | "recibida";
+  }[];
+  portafolio: {
+    id: number;
+    titulo: string;
+    descripcion: string;
+    imagen_url?: string | null;
+    activo: boolean;
+    creado_en: string;
+    publicacion_titulo?: string | null;
+  }[];
+  quejas: {
+    id: number;
+    tipo_usuario: string;
+    motivo: string;
+    estado: string;
+    creado_en: string;
+    solicitud_id?: number | null;
+    publicacion_id?: number | null;
+  }[];
+  eventos: {
+    id: number;
+    tipo_evento: string;
+    entidad: string;
+    entidad_id?: number | null;
+    detalle: string;
+    creado_en: string;
+  }[];
+};
+
 export type AdminPublication = {
   id: number;
   titulo: string;
@@ -556,6 +671,7 @@ export type AdminRequest = {
   precio: number | null;
   cliente_nombre: string;
   prestador_nombre: string;
+  detalle_cancelacion?: string;
 };
 
 export type AdminComplaint = {
@@ -622,6 +738,11 @@ export async function getAdminSummary() {
 export async function listAdminUsers() {
   const data = await backendFetch<{ usuarios: AdminUser[] }>("/admin/usuarios");
   return data.usuarios ?? [];
+}
+
+export async function getAdminUserDetail(id: number | string) {
+  const data = await backendFetch<AdminUserDetail>(`/admin/usuarios/${id}/detalle`);
+  return data as AdminUserDetail;
 }
 
 export async function listAdminPublications() {

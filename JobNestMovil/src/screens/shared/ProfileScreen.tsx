@@ -131,6 +131,7 @@ export function ProfileScreen({
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPasswords, setShowPasswords] = useState(false);
+  const [photoFailed, setPhotoFailed] = useState(false);
 
   const isProvider = currentUserType === 'Prestador';
   const photoUrl = buildAbsoluteUrl(apiUrl, profile?.foto_perfil);
@@ -200,6 +201,10 @@ export function ProfileScreen({
   useEffect(() => {
     void loadProfile();
   }, [loadProfile]);
+
+  useEffect(() => {
+    setPhotoFailed(false);
+  }, [profile?.foto_perfil]);
 
   const validateProfile = () => {
     const nextErrors: FieldErrors<ProfileField> = {};
@@ -337,7 +342,11 @@ export function ProfileScreen({
           <View style={styles.profileHero}>
             <Pressable onPress={pickPhoto} disabled={saving} accessibilityRole="button" accessibilityLabel="Cambiar foto de perfil" hitSlop={8}>
               <View style={styles.profileAvatarFrame}>
-                {photoUrl ? <Image source={{ uri: photoUrl }} style={styles.profileAvatarImage} resizeMode="cover" /> : <Text style={styles.avatarText}>{initials(profile)}</Text>}
+                {photoUrl && !photoFailed ? (
+                  <Image source={{ uri: photoUrl }} style={styles.profileAvatarImage} resizeMode="cover" onError={() => setPhotoFailed(true)} />
+                ) : (
+                  <Text style={styles.avatarText}>{initials(profile)}</Text>
+                )}
               </View>
             </Pressable>
             <Text style={styles.profileName}>{fullName(profile)}</Text>

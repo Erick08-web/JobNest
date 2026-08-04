@@ -1,4 +1,4 @@
-import type { Publication } from './domain';
+import type { Publication, RequestItem } from './domain';
 
 export type PublicStackParamList = {
   Home: undefined;
@@ -22,13 +22,14 @@ export type ProviderTabParamList = {
   ProviderHome: undefined;
   ExploreTab: undefined;
   Requests: undefined;
-  Publish: undefined;
   Profile: undefined;
 };
 
 export type AuthenticatedStackParamList = {
   MainTabs: { screen?: keyof ClientTabParamList | keyof ProviderTabParamList } | undefined;
   Detail: { publication: Publication };
+  Chat: { request: RequestItem };
+  Publish: undefined;
   Settings: undefined;
   ForgotPassword: undefined;
 };

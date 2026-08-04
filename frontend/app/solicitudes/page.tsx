@@ -3,14 +3,18 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, BadgeCheck, BriefcaseBusiness, CalendarDays, CheckCircle2, Clock3, MessageCircle, Search, XCircle } from "lucide-react";
-import { fetchCurrentUser, listClientRequests, listProviderRequests, markRequestDone, updateRequestStatus, type CurrentUser, type RequestItem } from "../lib/api";
+import { cancelRequest, fetchCurrentUser, listClientRequests, listProviderRequests, listRequestHistory, markRequestDone, updateRequestStatus, type CurrentUser, type RequestHistoryEvent, type RequestItem } from "../lib/api";
 
 const statusLabels: Record<string, string> = {
   pendiente: "Pendiente",
   aceptada: "Aceptada",
   rechazada: "Rechazada",
   concluido: "Concluida",
-  concluida: "Concluida"
+  concluida: "Concluida",
+  calificado: "Calificada",
+  cancelada: "Cancelada",
+  cancelada_cliente: "Cancelada por cliente",
+  cancelada_prestador: "Cancelada por prestador"
 };
 
 function money(value: number | null) {
@@ -22,6 +26,10 @@ export default function RequestsPage() {
   const [requests, setRequests] = useState<RequestItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
+  const [cancelingId, setCancelingId] = useState<number | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
+  const [workingId, setWorkingId] = useState<number | null>(null);
+  const [history, setHistory] = useState<Record<number, RequestHistoryEvent[]>>({});
 
   const load = async () => {
     setLoading(true);
@@ -32,6 +40,8 @@ export default function RequestsPage() {
       setUser(current);
       const items = current.tipo_usuario === "prestador" ? await listProviderRequests() : await listClientRequests();
       setRequests(items);
+      const historyEntries = await Promise.all(items.map(async (item) => [item.id, await listRequestHistory(item.id).catch(() => [])] as const));
+      setHistory(Object.fromEntries(historyEntries));
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "No fue posible cargar solicitudes.");
     } finally {
@@ -50,23 +60,51 @@ export default function RequestsPage() {
 
   const handleStatus = async (id: number, estado: "aceptada" | "rechazada") => {
     setMessage("");
+    setWorkingId(id);
     try {
       const result = await updateRequestStatus(id, estado);
       setMessage(result.message || "Solicitud actualizada.");
       await load();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "No fue posible actualizar la solicitud.");
+    } finally {
+      setWorkingId(null);
     }
   };
 
   const handleDone = async (id: number) => {
     setMessage("");
+    setWorkingId(id);
     try {
       const result = await markRequestDone(id);
       setMessage(result.message || "Trabajo marcado como concluido.");
       await load();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "No fue posible marcar como concluido.");
+    } finally {
+      setWorkingId(null);
+    }
+  };
+
+  const handleCancel = async (id: number) => {
+    const reason = cancelReason.trim();
+    if (!reason) {
+      setMessage("El motivo de cancelación es obligatorio.");
+      return;
+    }
+    if (!window.confirm("¿Deseas cancelar este servicio? Esta acción puede no ser reversible.")) return;
+    setMessage("");
+    setWorkingId(id);
+    try {
+      const result = await cancelRequest(id, reason);
+      setMessage(result.message || "El servicio fue cancelado correctamente.");
+      setCancelingId(null);
+      setCancelReason("");
+      await load();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "No pudimos completar la acción.");
+    } finally {
+      setWorkingId(null);
     }
   };
 
@@ -98,6 +136,8 @@ export default function RequestsPage() {
       <section className="moduleList requestList">
         {requests.map((request) => {
           const otherName = user?.tipo_usuario === "prestador" ? request.cliente_nombre : request.prestador_nombre;
+          const requestHistory = history[request.id] ?? [];
+          const canCancel = ["pendiente", "aceptada"].includes(request.estado);
           return (
             <article className="requestItem" key={request.id}>
               <div className="paymentIcon"><BriefcaseBusiness size={20} /></div>
@@ -107,12 +147,33 @@ export default function RequestsPage() {
                 <p>{otherName || "Usuario JobNest"} · {request.categoria} · {money(request.precio)}</p>
                 <small><CalendarDays size={15} /> {request.fecha_servicio || "Fecha por definir"} {request.hora_servicio ? `· ${request.hora_servicio}` : ""}</small>
                 {request.mensaje_cliente ? <blockquote>{request.mensaje_cliente}</blockquote> : null}
+                {requestHistory.length ? (
+                  <div className="requestHistory">
+                    <strong>Historial</strong>
+                    {requestHistory.map((event, index) => (
+                      <p key={`${request.id}-${event.titulo}-${index}`}><span>{event.fecha || "Sin fecha"}</span> {event.titulo}{event.detalle ? `: ${event.detalle}` : ""}</p>
+                    ))}
+                  </div>
+                ) : null}
+                {cancelingId === request.id ? (
+                  <div className="cancelBox">
+                    <strong>Motivo de cancelación</strong>
+                    <p>Explica brevemente por qué deseas cancelar este servicio.</p>
+                    <textarea value={cancelReason} onChange={(event) => setCancelReason(event.target.value)} maxLength={500} placeholder="Escribe el motivo..." />
+                    <small>{cancelReason.length}/500</small>
+                    <div>
+                      <button type="button" onClick={() => { setCancelingId(null); setCancelReason(""); }}>Cancelar</button>
+                      <button type="button" className="dangerAction" disabled={workingId === request.id} onClick={() => void handleCancel(request.id)}>{workingId === request.id ? "Cancelando..." : "Confirmar cancelación"}</button>
+                    </div>
+                  </div>
+                ) : null}
               </div>
               <div className="requestActions">
                 <Link href="/mensajes"><MessageCircle size={17} /> Mensajes</Link>
-                {user?.tipo_usuario === "prestador" && request.estado === "pendiente" ? <button onClick={() => void handleStatus(request.id, "aceptada")}><CheckCircle2 size={17} /> Aceptar</button> : null}
-                {user?.tipo_usuario === "prestador" && request.estado === "pendiente" ? <button className="dangerAction" onClick={() => void handleStatus(request.id, "rechazada")}><XCircle size={17} /> Rechazar</button> : null}
-                {user?.tipo_usuario === "prestador" && request.estado === "aceptada" ? <button onClick={() => void handleDone(request.id)}><CheckCircle2 size={17} /> Concluir</button> : null}
+                {canCancel ? <button className="dangerAction" disabled={workingId === request.id} onClick={() => setCancelingId(request.id)}><XCircle size={17} /> Cancelar</button> : null}
+                {user?.tipo_usuario === "prestador" && request.estado === "pendiente" ? <button disabled={workingId === request.id} onClick={() => void handleStatus(request.id, "aceptada")}><CheckCircle2 size={17} /> Aceptar</button> : null}
+                {user?.tipo_usuario === "prestador" && request.estado === "pendiente" ? <button className="dangerAction" disabled={workingId === request.id} onClick={() => void handleStatus(request.id, "rechazada")}><XCircle size={17} /> Rechazar</button> : null}
+                {user?.tipo_usuario === "prestador" && request.estado === "aceptada" ? <button disabled={workingId === request.id} onClick={() => void handleDone(request.id)}><CheckCircle2 size={17} /> Concluir</button> : null}
               </div>
             </article>
           );

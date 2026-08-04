@@ -36,8 +36,10 @@ export type Publication = {
   prestador_email?: string;
   prestador_foto?: string | null;
   imagen_principal?: string | null;
+  imagenes?: string[];
   calificacion?: number | string;
   promedio_calificacion?: number | string;
+  total_resenas?: number;
   disponibilidad?: string;
   Disponibilidad?: string;
   experiencia?: string;
@@ -69,6 +71,31 @@ export type RequestItem = {
   PrestadorNombre?: string;
   mensaje?: string;
   Mensaje?: string;
+  precio?: number | null;
+  mi_calificacion?: number | null;
+  mi_comentario?: string | null;
+  mi_resena_fecha?: string | null;
+  pago_completado?: boolean;
+};
+
+export type ChatMessage = {
+  id: number;
+  emisor_id?: number | null;
+  cuerpo: string;
+  enviado_en?: string;
+  emisor_nombre?: string;
+  es_mio?: boolean;
+  es_sistema?: boolean;
+};
+
+export type ChatThread = {
+  success: boolean;
+  hilo_id?: number | null;
+  solicitud_id: number;
+  servicio: string;
+  contraparte: string;
+  contraparte_foto?: string | null;
+  mensajes: ChatMessage[];
 };
 
 export type MobileProfile = {

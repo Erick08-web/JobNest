@@ -1,10 +1,13 @@
 import React, { useState } from 'react';
-import { Alert } from 'react-native';
-import { AuthCard, Field, PrimaryButton, Segmented } from '../../components/ui';
+import Ionicons from '@expo/vector-icons/Ionicons';
+import * as ImagePicker from 'expo-image-picker';
+import { Alert, Image, Pressable, Text, View } from 'react-native';
+import { AuthCard, Field, GhostButton, PrimaryButton, Segmented } from '../../components/ui';
 import { useAuth } from '../../context/AuthContext';
 import { createPublication } from '../../services/publicationService';
 import type { Category } from '../../types/domain';
 import type { FieldErrors } from '../../types/forms';
+import { palette, styles } from '../../styles/theme';
 import { cleanText, mergeServerErrors } from '../../utils/validation';
 
 type PublicationField = 'titulo' | 'descripcion' | 'categoria' | 'salario' | 'ubicacion' | 'experiencia' | 'habilidades' | 'disponibilidad' | 'tipo_precio';
@@ -20,7 +23,41 @@ export function CreatePublicationScreen({ categories, onPublished }: { categorie
   const [postExperience, setPostExperience] = useState('');
   const [postAvailability, setPostAvailability] = useState('');
   const [postPriceType, setPostPriceType] = useState('');
+  const [selectedImages, setSelectedImages] = useState<ImagePicker.ImagePickerAsset[]>([]);
   const [errors, setErrors] = useState<FieldErrors<PublicationField>>({});
+
+  const pickImages = async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Permiso necesario', 'Permite acceder a tus fotos para agregar imágenes del servicio.');
+      return;
+    }
+
+    const remaining = 8 - selectedImages.length;
+    if (remaining <= 0) {
+      Alert.alert('Límite alcanzado', 'Puedes agregar hasta 8 imágenes por publicación.');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.82,
+      allowsMultipleSelection: true,
+      selectionLimit: remaining,
+    });
+    if (result.canceled) return;
+
+    const validImages = result.assets.filter((asset) => !asset.fileSize || asset.fileSize <= 5 * 1024 * 1024);
+    const rejected = result.assets.length - validImages.length;
+    if (rejected > 0) {
+      Alert.alert('Algunas fotos no se agregaron', 'Cada imagen debe pesar máximo 5 MB.');
+    }
+    setSelectedImages((current) => [...current, ...validImages].slice(0, 8));
+  };
+
+  const removeImage = (uri: string) => {
+    setSelectedImages((current) => current.filter((image) => image.uri !== uri));
+  };
 
   const handlePublish = async () => {
     const nextErrors: FieldErrors<PublicationField> = {};
@@ -81,6 +118,11 @@ export function CreatePublicationScreen({ categories, onPublished }: { categorie
         postExperience: experience,
         postAvailability: availability,
         postPriceType: priceType,
+        images: selectedImages.map((image, index) => ({
+          uri: image.uri,
+          fileName: image.fileName || `servicio-${Date.now()}-${index}.jpg`,
+          mimeType: image.mimeType || 'image/jpeg',
+        })),
       });
       Alert.alert('Servicio publicado', 'Tu servicio ya puede aparecer para clientes.');
       setPostTitle('');
@@ -92,6 +134,7 @@ export function CreatePublicationScreen({ categories, onPublished }: { categorie
       setPostExperience('');
       setPostAvailability('');
       setPostPriceType('');
+      setSelectedImages([]);
       onPublished();
     } catch (error) {
       const parsed = mergeServerErrors<PublicationField>(error, 'Revisa los datos de la publicación.');
@@ -114,6 +157,43 @@ export function CreatePublicationScreen({ categories, onPublished }: { categorie
       <Field label="Disponibilidad" value={postAvailability} onChangeText={(value) => { setPostAvailability(value); setErrors((current) => ({ ...current, disponibilidad: undefined })); }} error={errors.disponibilidad} />
       <Field label="Tipo de precio" value={postPriceType} onChangeText={(value) => { setPostPriceType(value); setErrors((current) => ({ ...current, tipo_precio: undefined })); }} placeholder="hora, servicio, dia o proyecto" error={errors.tipo_precio} />
       <Field label="Descripcion" value={postDescription} onChangeText={(value) => { setPostDescription(value); setErrors((current) => ({ ...current, descripcion: undefined })); }} multiline error={errors.descripcion} />
+      <View style={styles.photoPickerBlock}>
+        <View style={styles.photoPickerHeader}>
+          <View>
+            <Text style={styles.photoPickerTitle}>Fotos del servicio</Text>
+            <Text style={styles.photoPickerCaption}>{selectedImages.length ? `${selectedImages.length} de 8 seleccionadas` : 'Agrega imágenes reales de tu trabajo.'}</Text>
+          </View>
+          <GhostButton title="Agregar" onPress={pickImages} disabled={loading || selectedImages.length >= 8} />
+        </View>
+        {selectedImages.length ? (
+          <View style={styles.photoPreviewGrid}>
+            {selectedImages.map((image, index) => (
+              <View key={`${image.uri}-${index}`} style={styles.photoPreviewItem}>
+                <Image source={{ uri: image.uri }} style={styles.photoPreviewImage} resizeMode="cover" />
+                {index === 0 ? (
+                  <View style={styles.photoPrimaryBadge}>
+                    <Text style={styles.photoPrimaryText}>Principal</Text>
+                  </View>
+                ) : null}
+                <Pressable
+                  style={({ pressed }) => [styles.photoRemoveButton, pressed && styles.pressed]}
+                  onPress={() => removeImage(image.uri)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Quitar foto"
+                  hitSlop={8}
+                >
+                  <Ionicons name="close" size={16} color={palette.white} />
+                </Pressable>
+              </View>
+            ))}
+          </View>
+        ) : (
+          <View style={styles.photoEmptyBox}>
+            <Ionicons name="images-outline" size={22} color={palette.primary} />
+            <Text style={styles.photoEmptyText}>Las fotos ayudan a que los clientes entiendan mejor tu servicio.</Text>
+          </View>
+        )}
+      </View>
       <PrimaryButton title="Publicar servicio" onPress={handlePublish} disabled={loading} />
     </AuthCard>
   );

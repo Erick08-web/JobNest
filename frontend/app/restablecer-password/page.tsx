@@ -75,7 +75,7 @@ export default function ResetPasswordPage() {
           <span className="eyebrow"><Sparkles size={16} /> Enlace seguro</span>
           <h1>Crea una contraseña nueva para tu cuenta.</h1>
           <p>El enlace solo puede utilizarse una vez y caduca automáticamente.</p>
-          <div className="authTrustCard"><ShieldCheck /><strong>Sesiones móviles protegidas.</strong><span>Al cambiar tu contraseña se revocan los refresh tokens móviles anteriores.</span></div>
+          <div className="authTrustCard"><ShieldCheck /><strong>Sesiones protegidas.</strong><span>Al cambiar tu contraseña se cerrarán accesos anteriores por seguridad.</span></div>
         </aside>
         <Suspense fallback={<div className="authCard">Cargando...</div>}>
           <ResetPasswordContent />

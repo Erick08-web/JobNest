@@ -16,6 +16,10 @@ function money(value: number | null) {
   return value ? `$${value.toLocaleString("es-MX")}` : "Cotizar";
 }
 
+function StarsReadOnly({ value }: { value: number }) {
+  return <div className="ratingPicker readonlyRating">{[1, 2, 3, 4, 5].map((star) => <Star key={star} size={24} fill={star <= value ? "currentColor" : "none"} />)}</div>;
+}
+
 export default function ReviewsPage() {
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [services, setServices] = useState<CompletedService[]>([]);
@@ -49,6 +53,7 @@ export default function ReviewsPage() {
   const selected = services.find((item) => item.id === selectedId) ?? null;
   const pending = services.filter((item) => !item.mi_calificacion);
   const home = user?.tipo_usuario === "prestador" ? "/profesional" : "/cliente";
+  const alreadyRated = Boolean(selected?.mi_calificacion);
 
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -81,7 +86,7 @@ export default function ReviewsPage() {
         <aside><ShieldCheck /><strong>{pending.length}</strong><span>Pendientes por calificar</span></aside>
       </section>
 
-      {message ? <div className="formAlert reviewsAlert">{message}</div> : null}
+      {message ? <div className="formAlert reviewsAlert">{message}<button type="button" onClick={() => void load()}>Reintentar</button></div> : null}
       {loading ? <div className="portfolioEmpty reviewsAlert"><Search size={30} /><h3>Cargando servicios...</h3></div> : null}
 
       <section className="reviewsWorkspace">
@@ -97,15 +102,25 @@ export default function ReviewsPage() {
         </div>
 
         <form className="reviewForm" onSubmit={submit}>
-          <span className="sectionKicker"><MessageSquareText size={16} /> Nueva reseña</span>
+          <span className="sectionKicker"><MessageSquareText size={16} /> {alreadyRated ? "Reseña enviada" : "Nueva reseña"}</span>
           <h2>{selected ? selected.titulo : "Selecciona un servicio"}</h2>
-          {selected?.mi_calificacion ? <p className="existingReview">Ya calificaste este servicio con {selected.mi_calificacion} estrellas.</p> : null}
-          <div className="ratingPicker">
-            {[1, 2, 3, 4, 5].map((value) => <button type="button" className={value <= rating ? "active" : ""} onClick={() => setRating(value)} key={value}><Star size={24} fill="currentColor" /></button>)}
-          </div>
-          <label><span>Comentario rápido</span><select value={quick} onChange={(event) => setQuick(event.target.value)}>{quickOptions.map((option) => <option key={option}>{option}</option>)}</select></label>
-          <label><span>Comentario adicional</span><textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Agrega detalles sobre tu experiencia." /></label>
-          <button className="submitButton" disabled={!selected || !!selected.mi_calificacion || saving}>{saving ? "Guardando..." : "Guardar reseña"}</button>
+          {alreadyRated && selected?.mi_calificacion ? (
+            <div className="existingReview">
+              <p>Tú ya calificaste este servicio.</p>
+              <StarsReadOnly value={selected.mi_calificacion} />
+              {selected.mi_comentario ? <p>{selected.mi_comentario}</p> : <p>Sin comentario adicional.</p>}
+              {selected.mi_resena_fecha ? <span>{selected.mi_resena_fecha}</span> : null}
+            </div>
+          ) : (
+            <>
+              <div className="ratingPicker">
+                {[1, 2, 3, 4, 5].map((value) => <button type="button" className={value <= rating ? "active" : ""} onClick={() => setRating(value)} key={value}><Star size={24} fill="currentColor" /></button>)}
+              </div>
+              <label><span>Comentario rápido</span><select value={quick} onChange={(event) => setQuick(event.target.value)}>{quickOptions.map((option) => <option key={option}>{option}</option>)}</select></label>
+              <label><span>Comentario adicional</span><textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Agrega detalles sobre tu experiencia." /></label>
+              <button className="submitButton" disabled={!selected || saving}>{saving ? "Guardando..." : "Guardar reseña"}</button>
+            </>
+          )}
         </form>
       </section>
     </main>

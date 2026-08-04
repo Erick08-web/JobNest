@@ -67,7 +67,7 @@ export default function PaymentsPage() {
     <main className="paymentsPage">
       <header className="moduleTopbar"><Link href="/cliente" className="backLink"><ArrowLeft size={18} /> Volver</Link><strong>Pagos</strong></header>
       <section className="paymentsHero">
-        <div><span className="sectionKicker">Centro financiero</span><h1>Pagos conectados a tus solicitudes aceptadas.</h1><p>Solo aparecen servicios aceptados que aún están pendientes de pago.</p></div>
+        <div><span className="sectionKicker">Centro financiero</span><h1>Pagos conectados a tus servicios concluidos.</h1><p>Podrás realizar el pago cuando el servicio esté concluido.</p></div>
         <aside className="walletCard"><span>JobNest Wallet</span><strong>{money(total)}</strong><p>Pendiente por confirmar</p><div><LockKeyhole size={18} /> Pago protegido</div></aside>
       </section>
 
@@ -83,7 +83,7 @@ export default function PaymentsPage() {
         <section className="paymentTimeline">
           <div className="sectionTitleRow"><div><span className="sectionKicker">Movimientos</span><h2>Servicios aceptados</h2></div><button type="button" onClick={() => void load()}>Actualizar</button></div>
           {loading ? <div className="portfolioEmpty"><CreditCard size={30} /><h3>Cargando pagos...</h3></div> : null}
-          {!loading && !payments.length ? <div className="portfolioEmpty"><CheckCircle2 size={30} /><h3>No tienes pagos pendientes</h3><p>Cuando un prestador acepte una solicitud, aparecerá aquí.</p></div> : null}
+          {!loading && !payments.length ? <div className="portfolioEmpty"><CheckCircle2 size={30} /><h3>No tienes pagos pendientes</h3><p>Cuando un servicio esté concluido y pendiente de pago, aparecerá aquí.</p></div> : null}
           {payments.map((payment) => (
             <article className={selectedId === payment.id ? "paymentItem selected" : "paymentItem"} key={payment.id} onClick={() => setSelectedId(payment.id)}>
               <div className="paymentIcon"><CreditCard size={20} /></div>
@@ -96,7 +96,7 @@ export default function PaymentsPage() {
         </section>
 
         <aside className="paymentTrustPanel">
-          <article><ShieldCheck /><h3>Registrar pago</h3><p>{selected ? `Servicio seleccionado: ${selected.titulo}` : "Selecciona una solicitud aceptada para pagar."}</p></article>
+          <article><ShieldCheck /><h3>Registrar pago</h3><p>{selected ? `Servicio seleccionado: ${selected.titulo}` : "Selecciona un servicio concluido para pagar."}</p></article>
           {selected ? (
             <form className="paymentForm" onSubmit={handlePayment}>
               <label><span>Método</span><select value={method} onChange={(event) => setMethod(event.target.value as "efectivo" | "tarjeta")}><option value="efectivo">Efectivo</option><option value="tarjeta">Tarjeta</option></select></label>

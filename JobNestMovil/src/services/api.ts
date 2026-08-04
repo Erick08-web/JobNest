@@ -21,6 +21,17 @@ const GENERIC_CONNECTION_ERROR = 'No fue posible conectarnos en este momento. In
 const API_BACKEND_PREFIX = '/api/backend';
 export const OFFICIAL_API_URL = 'https://jobnestservices.com/api/backend';
 const TECHNICAL_ERROR_PATTERNS = [
+  /traceback/i,
+  /nonetype/i,
+  /stack trace/i,
+  /invalid column/i,
+  /exception/i,
+  /python/i,
+  /flask/i,
+  /sql/i,
+  /jwt/i,
+  /secret/i,
+  /configur/i,
   /network request failed/i,
   /failed to fetch/i,
   /error\s*500/i,
@@ -129,6 +140,9 @@ async function requestWithJwt<T>(
     Accept: 'application/json',
     ...(options.headers as Record<string, string> | undefined),
   };
+  if (typeof options.body === 'string' && !headers['Content-Type']) {
+    headers['Content-Type'] = 'application/json';
+  }
 
   if (shouldUseAuth && tokens?.accessToken) {
     headers.Authorization = `Bearer ${tokens.accessToken}`;

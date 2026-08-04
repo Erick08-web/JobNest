@@ -29,8 +29,9 @@ export default function AdminAccountPage() {
   }, []);
 
   const handleLogout = async () => {
+    if (!window.confirm("¿Deseas cerrar la sesión administrativa?")) return;
     await logoutUser();
-    window.location.href = "/";
+    window.location.href = "/login";
   };
 
   return (

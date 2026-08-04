@@ -5,6 +5,12 @@ import { useEffect, useState } from "react";
 import { ArrowLeft, Camera, KeyRound, Mail, ShieldCheck, Sparkles, UserRound } from "lucide-react";
 import { changePassword, fetchCurrentUser, updateProfile, uploadProfilePhoto, type CurrentUser } from "../lib/api";
 
+function assetUrl(value?: string | null) {
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value;
+  return value.startsWith("/api/backend") ? value : `/api/backend${value.startsWith("/") ? value : `/${value}`}`;
+}
+
 export default function AccountPage() {
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [form, setForm] = useState({ nombres: "", apellido_paterno: "", apellido_materno: "", telefono: "" });
@@ -98,7 +104,7 @@ export default function AccountPage() {
           <p>Administra tus datos personales, foto y acceso en JobNest.</p>
         </div>
         <aside>
-          <div className="accountAvatar">{user?.foto_perfil ? <img src={`/api/backend${user.foto_perfil}`} alt="Foto de perfil" /> : <UserRound />}</div>
+          <div className="accountAvatar">{user?.foto_perfil ? <img src={assetUrl(user.foto_perfil)} alt="Foto de perfil" /> : <UserRound />}</div>
           <strong>{user?.correo || "Cuenta"}</strong>
           <span>{user?.tipo_usuario || "JobNest"}</span>
         </aside>
@@ -123,7 +129,7 @@ export default function AccountPage() {
         <form className="accountCard" onSubmit={savePhoto}>
           <span className="sectionKicker"><Camera size={16} /> Foto</span>
           <h2>Foto de perfil</h2>
-          <label className="fileDrop accountDrop"><Camera /><span>{photo ? photo.name : "Seleccionar imagen"}</span><input type="file" accept="image/png,image/jpeg,image/jpg,image/gif" onChange={(event) => setPhoto(event.target.files?.[0] ?? null)} /></label>
+          <label className="fileDrop accountDrop"><Camera /><span>{photo ? photo.name : "Seleccionar imagen"}</span><input type="file" accept="image/png,image/jpeg,image/jpg,image/webp" onChange={(event) => setPhoto(event.target.files?.[0] ?? null)} /></label>
           <button className="submitButton" disabled={saving}>Actualizar foto</button>
         </form>
 

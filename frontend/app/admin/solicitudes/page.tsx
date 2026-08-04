@@ -74,6 +74,7 @@ export default function AdminRequestsPage() {
                     <strong>{item.titulo_publicacion || "Servicio sin título"}</strong>
                     <span>{item.cliente_nombre || "Cliente"} → {item.prestador_nombre || "Prestador"}</span>
                     <span>{item.precio ? formatAdminMoney(item.precio) : "Sin precio"} · Servicio: {item.fecha_servicio ? formatAdminDate(item.fecha_servicio, true) : "Sin fecha programada"} · Solicitud: {formatAdminDate(item.fecha_solicitud, true)}</span>
+                    {item.detalle_cancelacion ? <span>{item.detalle_cancelacion}</span> : null}
                   </div>
                   <AdminBadge tone={statusTone(item.estado)}>{humanizeAdminText(item.estado)}</AdminBadge>
                 </article>

@@ -18,7 +18,10 @@ export function normalizePublication(item: Publication): Publication {
     disponibilidad: item.disponibilidad ?? item.Disponibilidad,
     nombre_prestador: item.nombre_prestador ?? item.NombrePrestador ?? item.prestador_nombre,
     prestador_email: item.prestador_email,
+    imagen_principal: item.imagen_principal,
+    imagenes: item.imagenes ?? (item.imagen_principal ? [item.imagen_principal] : []),
     promedio_calificacion: item.promedio_calificacion ?? item.calificacion,
+    total_resenas: item.total_resenas,
   };
 }
 

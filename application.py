@@ -482,6 +482,35 @@ def validation_response(errors, message='Revisa los datos ingresados', status_co
     return jsonify({'success': False, 'message': message, 'errors': errors}), status_code
 
 
+TECHNICAL_ERROR_PATTERNS = (
+    'traceback',
+    'nonetype',
+    'sql',
+    'flask',
+    'python',
+    'exception',
+    'stack trace',
+    'invalid column',
+    'database',
+    'base de datos',
+    'odbc',
+    'pyodbc',
+    'jwt',
+    'secret',
+    'configur',
+)
+
+
+def friendly_error_message(error=None, fallback='No pudimos completar la acción. Inténtalo nuevamente.'):
+    text = clean_text(error)
+    if not text:
+        return fallback
+    lowered = text.lower()
+    if any(pattern in lowered for pattern in TECHNICAL_ERROR_PATTERNS):
+        return fallback
+    return text
+
+
 def clean_text(value):
     if value is None:
         return ''
@@ -1224,7 +1253,7 @@ def load_mobile_jwt_user():
     try:
         user_id = int(identity)
     except (TypeError, ValueError):
-        return None, jsonify({'success': False, 'message': 'Token inválido'}), 401
+        return None, jsonify({'success': False, 'message': 'Sesión inválida. Inicia sesión nuevamente.'}), 401
 
     conn = None
     try:
@@ -1264,7 +1293,7 @@ def jwt_expired_callback(jwt_header, jwt_payload):
     record_security_warning('jwt.expired')
     if request.path == '/api/mobile/auth/refresh':
         record_auth_event('refresh', 'failed', 'mobile')
-    return jsonify({'success': False, 'message': 'Token expirado'}), 401
+    return jsonify({'success': False, 'message': 'Sesión expirada. Inicia sesión nuevamente.'}), 401
 
 
 @jwt.invalid_token_loader
@@ -1272,7 +1301,7 @@ def jwt_invalid_callback(reason):
     record_security_warning('jwt.invalid')
     if request.path == '/api/mobile/auth/refresh':
         record_auth_event('refresh', 'failed', 'mobile')
-    return jsonify({'success': False, 'message': 'Token inválido'}), 401
+    return jsonify({'success': False, 'message': 'Sesión inválida. Inicia sesión nuevamente.'}), 401
 
 
 @jwt.unauthorized_loader
@@ -1280,7 +1309,7 @@ def jwt_missing_callback(reason):
     record_security_warning('jwt.missing')
     if request.path == '/api/mobile/auth/refresh':
         record_auth_event('refresh', 'failed', 'mobile')
-    return jsonify({'success': False, 'message': 'Token requerido'}), 401
+    return jsonify({'success': False, 'message': 'Inicia sesión para continuar.'}), 401
 
 
 @jwt.revoked_token_loader
@@ -1288,7 +1317,7 @@ def jwt_revoked_callback(jwt_header, jwt_payload):
     record_security_warning('jwt.revoked')
     if request.path == '/api/mobile/auth/refresh':
         record_auth_event('refresh', 'failed', 'mobile')
-    return jsonify({'success': False, 'message': 'Token revocado'}), 401
+    return jsonify({'success': False, 'message': 'Sesión cerrada. Inicia sesión nuevamente.'}), 401
 
 
 def require_admin_session():
@@ -1591,6 +1620,61 @@ def crear_alerta(cursor, tipo, titulo, mensaje, publicacion_id=None, version_id=
     """, (usuario_id, rol_destino, tipo, prioridad, titulo, mensaje, publicacion_id, version_id, entidad, entidad_id))
 
 
+def db_table_exists(cursor, table_name):
+    cursor.execute("SELECT CASE WHEN OBJECT_ID(?, 'U') IS NULL THEN 0 ELSE 1 END", (table_name,))
+    row = cursor.fetchone()
+    return bool(row and row[0])
+
+
+def db_column_exists(cursor, table_name, column_name):
+    cursor.execute("SELECT CASE WHEN COL_LENGTH(?, ?) IS NULL THEN 0 ELSE 1 END", (table_name, column_name))
+    row = cursor.fetchone()
+    return bool(row and row[0])
+
+
+def safe_audit_event(cursor, tipo_evento, entidad, entidad_id=None, detalle=None, usuario_id=None, actor_id=None, valor_anterior=None, valor_nuevo=None):
+    if not db_table_exists(cursor, 'BitacoraAdmin'):
+        return False
+    required_columns = (
+        'UsuarioId', 'ActorId', 'RolActor', 'TipoEvento', 'Entidad', 'EntidadId',
+        'Detalle', 'ValorAnterior', 'ValorNuevo', 'IpOrigen', 'UserAgent'
+    )
+    if not all(db_column_exists(cursor, 'BitacoraAdmin', column) for column in required_columns):
+        return False
+    audit_event(cursor, tipo_evento, entidad, entidad_id, detalle, usuario_id, actor_id, valor_anterior, valor_nuevo)
+    return True
+
+
+def safe_crear_alerta(cursor, *args, **kwargs):
+    if not db_table_exists(cursor, 'AlertasSistema'):
+        return False
+    required_columns = ('UsuarioId', 'RolDestino', 'Tipo', 'Prioridad', 'Titulo', 'Mensaje', 'PublicacionId', 'VersionId', 'Entidad', 'EntidadId')
+    if not all(db_column_exists(cursor, 'AlertasSistema', column) for column in required_columns):
+        return False
+    crear_alerta(cursor, *args, **kwargs)
+    return True
+
+
+def safe_request_system_message(cursor, solicitud_id, cuerpo):
+    if not (db_table_exists(cursor, 'Hilos') and db_table_exists(cursor, 'Mensajes')):
+        return False
+    if not db_column_exists(cursor, 'Hilos', 'SolicitudServicioId'):
+        return False
+    cursor.execute("SELECT id FROM Hilos WHERE SolicitudServicioId = ?", (solicitud_id,))
+    hilo = cursor.fetchone()
+    if hilo:
+        hilo_id = hilo[0]
+    else:
+        cursor.execute("INSERT INTO Hilos (SolicitudServicioId, CreadoEn) VALUES (?, GETDATE())", (solicitud_id,))
+        cursor.execute("SELECT CONVERT(INT, SCOPE_IDENTITY())")
+        hilo_id = cursor.fetchone()[0]
+    cursor.execute("""
+        INSERT INTO Mensajes (HiloId, EmisorId, Cuerpo, EnviadoEn)
+        VALUES (?, NULL, ?, GETDATE())
+    """, (hilo_id, cifrar_dato(cuerpo)))
+    return True
+
+
 def obtener_siguiente_version(cursor, publicacion_id):
     cursor.execute("SELECT COALESCE(MAX(VersionNumero), 0) + 1 FROM PublicacionVersiones WHERE PublicacionId = ?", (publicacion_id,))
     return int(cursor.fetchone()[0])
@@ -1728,6 +1812,18 @@ def guardar_imagenes_version(cursor, publicacion_id, version_id, user_id, imagen
                     f'Imagen subida para publicación {publicacion_id}, versión {version_id}.',
                     usuario_id=user_id, actor_id=user_id)
     return guardadas
+
+
+def obtener_imagenes_publicacion(cursor, publicacion_id):
+    cursor.execute("""
+        SELECT img.ImagenUrl
+        FROM PublicacionImagenes img
+        INNER JOIN PublicacionVersiones pv ON img.VersionId = pv.id
+        WHERE img.PublicacionId = ? AND pv.EsVersionPublica = 1
+          AND img.EstadoRevision = 'aprobada'
+        ORDER BY img.EsPrincipal DESC, img.Posicion
+    """, (publicacion_id,))
+    return [row[0] for row in cursor.fetchall() if row[0]]
 
 
 def leer_datos_publicacion_form():
@@ -2019,7 +2115,7 @@ def get_user_data():
 
     user_id = session.get('user_id')
     if not user_id:
-        return jsonify({'message': 'Id de usuario no encontrado en la sesión'}), 400
+        return jsonify({'message': 'No pudimos cargar la información.'}), 400
 
     conn = None
     try:
@@ -2054,10 +2150,10 @@ def get_user_data():
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
         print(f"Error de base de datos al obtener datos de usuario (sqlstate: {sqlstate}): {ex}")
-        return jsonify({'message': f"Error de base de datos: {ex}"}), 500
+        return jsonify({'message': 'No pudimos cargar la información.'}), 500
     except Exception as e:
         print(f"Error inesperado al obtener datos de usuario: {e}")
-        return jsonify({'message': f"Error inesperado: {e}"}), 500
+        return jsonify({'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
     finally:
         if conn:
             conn.close()
@@ -2146,7 +2242,7 @@ def mobile_auth_login():
 
     except RuntimeError as e:
         record_auth_event('login', 'failed_config', 'mobile')
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
         print(f"Error de base de datos en login móvil (sqlstate: {sqlstate}): {ex}")
@@ -2491,7 +2587,7 @@ def mobile_auth_refresh():
         user_id = int(get_jwt_identity())
     except (TypeError, ValueError):
         record_auth_event('refresh', 'failed', 'mobile')
-        return jsonify({'success': False, 'message': 'Token inválido'}), 401
+        return jsonify({'success': False, 'message': 'Sesión inválida. Inicia sesión nuevamente.'}), 401
 
     conn = None
     try:
@@ -2543,7 +2639,7 @@ def mobile_auth_refresh():
 
     except RuntimeError as e:
         record_auth_event('refresh', 'failed_config', 'mobile')
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
         print(f"Error de base de datos al renovar token móvil (sqlstate: {sqlstate}): {ex}")
@@ -2608,14 +2704,11 @@ def subir_foto_perfil():
         return jsonify({'success': False, 'message': 'No se envió ninguna foto'}), 400
 
     file = request.files['foto']
-    if file.filename == '':
-        return jsonify({'success': False, 'message': 'Archivo vacío'}), 400
+    valid, message, meta = validate_mobile_profile_photo(file)
+    if not valid:
+        return jsonify({'success': False, 'message': message}), 400
 
-    if not allowed_file(file.filename):
-        return jsonify({'success': False, 'message': 'Formato no permitido. Use PNG, JPG, JPEG o GIF'}), 400
-
-    ext = file.filename.rsplit('.', 1)[1].lower()
-    nuevo_nombre = f"{user_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}.{ext}"
+    nuevo_nombre = f"{user_id}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}_{secrets.token_hex(4)}.{meta['extension']}"
     ruta_relativa = f"/static/uploads/perfiles/{nuevo_nombre}"
     ruta_absoluta = os.path.join(app.root_path, 'static', 'uploads', 'perfiles', nuevo_nombre)
 
@@ -2625,14 +2718,20 @@ def subir_foto_perfil():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        cursor.execute("SELECT FotoPerfil FROM Personas WHERE UsuarioId = ?", (user_id,))
+        row = cursor.fetchone()
+        previous_path = row[0] if row else None
         cursor.execute("UPDATE Personas SET FotoPerfil = ? WHERE UsuarioId = ?", (ruta_relativa, user_id))
         conn.commit()
+        maybe_remove_previous_profile_photo(cursor, user_id, previous_path)
 
         session['foto_perfil'] = ruta_relativa
 
         return jsonify({'success': True, 'message': 'Foto actualizada', 'foto_url': ruta_relativa}), 200
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+        if os.path.exists(ruta_absoluta):
+            os.remove(ruta_absoluta)
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -2652,7 +2751,7 @@ def obtener_foto_perfil():
         foto_url = row[0] if row and row[0] else None
         return jsonify({'success': True, 'foto_url': foto_url}), 200
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -2778,10 +2877,10 @@ def cambiar_contrasena():
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
         print(f"Error de base de datos al cambiar contraseña (sqlstate: {sqlstate}): {ex}")
-        return jsonify({'success': False, 'message': f"Ocurrió un error en la base de datos: {ex}"}), 500
+        return jsonify({'success': False, 'message': 'No pudimos completar la acción. Inténtalo nuevamente.'}), 500
     except Exception as e:
         print(f"Error inesperado al cambiar contraseña: {e}")
-        return jsonify({'success': False, 'message': f"Ocurrió un error inesperado al cambiar tu contraseña: {e}"}), 500
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
     finally:
         if conn:
             conn.close()
@@ -2838,14 +2937,14 @@ def crear_publicacion():
     except ValueError as e:
         if conn:
             conn.rollback()
-        return jsonify({'success': False, 'message': str(e)}), 400
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 400
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
         print(f"Error de base de datos al crear publicación (sqlstate: {sqlstate}): {ex}")
-        return jsonify({'success': False, 'message': f"Ocurrió un error en la base de datos: {ex}"}), 500
+        return jsonify({'success': False, 'message': 'No pudimos completar la acción. Inténtalo nuevamente.'}), 500
     except Exception as e:
         print(f"Error inesperado al crear publicación: {e}")
-        return jsonify({'success': False, 'message': f"Ocurrió un error inesperado: {e}"}), 500
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
     finally:
         if conn:
             conn.close()
@@ -2927,10 +3026,10 @@ def mis_publicaciones():
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
         print(f"Error de base de datos al obtener publicaciones (sqlstate: {sqlstate}): {ex}")
-        return jsonify({'success': False, 'message': f"Error de base de datos: {ex}"}), 500
+        return jsonify({'success': False, 'message': 'No pudimos cargar la información.'}), 500
     except Exception as e:
         print(f"Error inesperado al obtener publicaciones: {e}")
-        return jsonify({'success': False, 'message': f"Error inesperado: {e}"}), 500
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
     finally:
         if conn:
             conn.close()
@@ -2953,7 +3052,13 @@ def publicaciones_activas():
                     INNER JOIN PublicacionVersiones pv ON img.VersionId = pv.id
                     WHERE img.PublicacionId = p.id AND pv.EsVersionPublica = 1
                       AND img.EstadoRevision = 'aprobada'
-                    ORDER BY img.EsPrincipal DESC, img.Posicion) AS ImagenPrincipal
+                    ORDER BY img.EsPrincipal DESC, img.Posicion) AS ImagenPrincipal,
+                   (SELECT AVG(CAST(r.Calificacion AS FLOAT))
+                    FROM Resenas r
+                    WHERE r.EvaluadoId = u.id AND r.Calificacion IS NOT NULL) AS PromedioCalificacion,
+                   (SELECT COUNT(*)
+                    FROM Resenas r
+                    WHERE r.EvaluadoId = u.id AND r.Calificacion IS NOT NULL) AS TotalResenas
             FROM Publicaciones p
             INNER JOIN Usuarios u ON p.UsuarioId = u.id
             INNER JOIN Personas per ON u.id = per.UsuarioId
@@ -2989,7 +3094,10 @@ def publicaciones_activas():
                 'prestador_telefono': descifrar_dato(pub[15]),
                 'prestador_foto': pub[16],
                 'prestador_email': pub[17],
-                'imagen_principal': pub[18]
+                'imagen_principal': pub[18],
+                'imagenes': obtener_imagenes_publicacion(cursor, pub[0]),
+                'promedio_calificacion': round(float(pub[19]), 2) if pub[19] is not None else None,
+                'total_resenas': int(pub[20] or 0)
             })
 
         return jsonify({'success': True, 'publicaciones': publicaciones_list}), 200
@@ -2997,10 +3105,10 @@ def publicaciones_activas():
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
         print(f"Error de base de datos al obtener publicaciones activas (sqlstate: {sqlstate}): {ex}")
-        return jsonify({'success': False, 'message': f"Error de base de datos: {ex}"}), 500
+        return jsonify({'success': False, 'message': 'No pudimos cargar la información.'}), 500
     except Exception as e:
         print(f"Error inesperado al obtener publicaciones activas: {e}")
-        return jsonify({'success': False, 'message': f"Error inesperado: {e}"}), 500
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
     finally:
         if conn:
             conn.close()
@@ -3066,10 +3174,10 @@ def toggle_publicacion(publicacion_id):
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
         print(f"Error de base de datos al cambiar estado de publicación (sqlstate: {sqlstate}): {ex}")
-        return jsonify({'success': False, 'message': f"Error de base de datos: {ex}"}), 500
+        return jsonify({'success': False, 'message': 'No pudimos cargar la información.'}), 500
     except Exception as e:
         print(f"Error inesperado al cambiar estado de publicación: {e}")
-        return jsonify({'success': False, 'message': f"Error inesperado: {e}"}), 500
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
     finally:
         if conn:
             conn.close()
@@ -3086,14 +3194,20 @@ def detalles_publicacion(publicacion_id):
             SELECT p.id, p.Titulo, p.Descripcion, p.Categoria, p.Precio, p.Ubicacion,
                    p.Experiencia, p.Habilidades, p.Disponibilidad, p.IncluyeMateriales,
                    p.TipoPrecio, p.FechaCreacion,
-                   per.Nombre, per.ApellidoP, per.ApellidoM, per.Telefono,
+                   per.Nombre, per.ApellidoP, per.ApellidoM, per.Telefono, per.FotoPerfil,
                    u.Email, u.id as PrestadorId,
                    (SELECT TOP 1 img.ImagenUrl
                     FROM PublicacionImagenes img
                     INNER JOIN PublicacionVersiones pv ON img.VersionId = pv.id
                     WHERE img.PublicacionId = p.id AND pv.EsVersionPublica = 1
                       AND img.EstadoRevision = 'aprobada'
-                    ORDER BY img.EsPrincipal DESC, img.Posicion) AS ImagenPrincipal
+                    ORDER BY img.EsPrincipal DESC, img.Posicion) AS ImagenPrincipal,
+                   (SELECT AVG(CAST(r.Calificacion AS FLOAT))
+                    FROM Resenas r
+                    WHERE r.EvaluadoId = u.id AND r.Calificacion IS NOT NULL) AS PromedioCalificacion,
+                   (SELECT COUNT(*)
+                    FROM Resenas r
+                    WHERE r.EvaluadoId = u.id AND r.Calificacion IS NOT NULL) AS TotalResenas
             FROM Publicaciones p
             INNER JOIN Usuarios u ON p.UsuarioId = u.id
             INNER JOIN Personas per ON u.id = per.UsuarioId
@@ -3127,19 +3241,23 @@ def detalles_publicacion(publicacion_id):
             'fecha_creacion': publicacion[11].strftime('%d/%m/%Y') if publicacion[11] else '',
             'prestador_nombre': f"{publicacion[12]} {publicacion[13]} {publicacion[14]}",
             'prestador_telefono': descifrar_dato(publicacion[15]),
-            'prestador_email': publicacion[16],
-            'prestador_id': publicacion[17],
-            'imagen_principal': publicacion[18]
+            'prestador_foto': publicacion[16],
+            'prestador_email': publicacion[17],
+            'prestador_id': publicacion[18],
+            'imagen_principal': publicacion[19],
+            'imagenes': obtener_imagenes_publicacion(cursor, publicacion[0]),
+            'promedio_calificacion': round(float(publicacion[20]), 2) if publicacion[20] is not None else None,
+            'total_resenas': int(publicacion[21] or 0)
         }
         return jsonify({'success': True, 'publicacion': publicacion_detalles}), 200
 
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
         print(f"Error de base de datos al obtener detalles de publicación (sqlstate: {sqlstate}): {ex}")
-        return jsonify({'success': False, 'message': f"Error de base de datos: {ex}"}), 500
+        return jsonify({'success': False, 'message': 'No pudimos cargar la información.'}), 500
     except Exception as e:
         print(f"Error inesperado al obtener detalles de publicación: {e}")
-        return jsonify({'success': False, 'message': f"Error inesperado: {e}"}), 500
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
     finally:
         if conn:
             conn.close()
@@ -3167,7 +3285,13 @@ def buscar_publicaciones():
                     INNER JOIN PublicacionVersiones pv ON img.VersionId = pv.id
                     WHERE img.PublicacionId = p.id AND pv.EsVersionPublica = 1
                       AND img.EstadoRevision = 'aprobada'
-                    ORDER BY img.EsPrincipal DESC, img.Posicion) AS ImagenPrincipal
+                    ORDER BY img.EsPrincipal DESC, img.Posicion) AS ImagenPrincipal,
+                   (SELECT AVG(CAST(r.Calificacion AS FLOAT))
+                    FROM Resenas r
+                    WHERE r.EvaluadoId = u.id AND r.Calificacion IS NOT NULL) AS PromedioCalificacion,
+                   (SELECT COUNT(*)
+                    FROM Resenas r
+                    WHERE r.EvaluadoId = u.id AND r.Calificacion IS NOT NULL) AS TotalResenas
             FROM Publicaciones p
             INNER JOIN Usuarios u ON p.UsuarioId = u.id
             INNER JOIN Personas per ON u.id = per.UsuarioId
@@ -3232,7 +3356,10 @@ def buscar_publicaciones():
                 'prestador_telefono': descifrar_dato(pub[15]),
                 'prestador_foto': pub[16],
                 'prestador_email': pub[17],
-                'imagen_principal': pub[18]
+                'imagen_principal': pub[18],
+                'imagenes': obtener_imagenes_publicacion(cursor, pub[0]),
+                'promedio_calificacion': round(float(pub[19]), 2) if pub[19] is not None else None,
+                'total_resenas': int(pub[20] or 0)
             })
 
         return jsonify({'success': True, 'publicaciones': publicaciones_list}), 200
@@ -3240,10 +3367,10 @@ def buscar_publicaciones():
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
         print(f"Error de base de datos al buscar publicaciones (sqlstate: {sqlstate}): {ex}")
-        return jsonify({'success': False, 'message': f"Error de base de datos: {ex}"}), 500
+        return jsonify({'success': False, 'message': 'No pudimos cargar la información.'}), 500
     except Exception as e:
         print(f"Error inesperado al buscar publicaciones: {e}")
-        return jsonify({'success': False, 'message': f"Error inesperado: {e}"}), 500
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
     finally:
         if conn:
             conn.close()
@@ -3287,10 +3414,10 @@ def mi_portafolio():
         return jsonify({'success': True, 'portafolio': portafolio}), 200
     except pyodbc.Error as ex:
         print(f"Error de base de datos al obtener portafolio: {ex}")
-        return jsonify({'success': False, 'message': f'Error de base de datos: {ex}'}), 500
+        return jsonify({'success': False, 'message': 'No pudimos cargar la información.'}), 500
     except Exception as e:
         print(f"Error inesperado al obtener portafolio: {e}")
-        return jsonify({'success': False, 'message': f'Error inesperado: {e}'}), 500
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
     finally:
         if conn:
             conn.close()
@@ -3332,10 +3459,10 @@ def portafolio_publicacion(publicacion_id):
         return jsonify({'success': True, 'portafolio': portafolio}), 200
     except pyodbc.Error as ex:
         print(f"Error de base de datos al obtener portafolio de publicación: {ex}")
-        return jsonify({'success': False, 'message': f'Error de base de datos: {ex}'}), 500
+        return jsonify({'success': False, 'message': 'No pudimos cargar la información.'}), 500
     except Exception as e:
         print(f"Error inesperado al obtener portafolio de publicación: {e}")
-        return jsonify({'success': False, 'message': f'Error inesperado: {e}'}), 500
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
     finally:
         if conn:
             conn.close()
@@ -3394,12 +3521,12 @@ def subir_trabajo_portafolio():
         if os.path.exists(locals().get('ruta_archivo', '')):
             os.remove(ruta_archivo)
         print(f"Error de base de datos al subir trabajo de portafolio: {ex}")
-        return jsonify({'success': False, 'message': f'Error de base de datos: {ex}'}), 500
+        return jsonify({'success': False, 'message': 'No pudimos cargar la información.'}), 500
     except Exception as e:
         if os.path.exists(locals().get('ruta_archivo', '')):
             os.remove(ruta_archivo)
         print(f"Error inesperado al subir trabajo de portafolio: {e}")
-        return jsonify({'success': False, 'message': f'Error inesperado: {e}'}), 500
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
     finally:
         if conn:
             conn.close()
@@ -3424,10 +3551,10 @@ def eliminar_trabajo_portafolio(trabajo_id):
         return jsonify({'success': True, 'message': 'Trabajo eliminado del portafolio.'}), 200
     except pyodbc.Error as ex:
         print(f"Error de base de datos al eliminar trabajo de portafolio: {ex}")
-        return jsonify({'success': False, 'message': f'Error de base de datos: {ex}'}), 500
+        return jsonify({'success': False, 'message': 'No pudimos cargar la información.'}), 500
     except Exception as e:
         print(f"Error inesperado al eliminar trabajo de portafolio: {e}")
-        return jsonify({'success': False, 'message': f'Error inesperado: {e}'}), 500
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
     finally:
         if conn:
             conn.close()
@@ -3473,6 +3600,12 @@ def enviar_solicitud():
         if not publicacion:
             return jsonify({'success': False, 'message': 'Publicación no encontrada o no activa.'}), 404
         prestador_id = publicacion[0]
+        if prestador_id == user_id:
+            return jsonify({
+                'success': False,
+                'message': 'No puedes solicitar un servicio publicado por tu propia cuenta.',
+                'errors': {'publicacion_id': 'No puedes solicitar un servicio publicado por tu propia cuenta.'}
+            }), 403
 
         sql_insert = """
             INSERT INTO SolicitudesServicios (PublicacionId, ClienteId, PrestadorId, FechaServicio, HoraServicio, MensajeCliente, Estado)
@@ -3509,10 +3642,10 @@ def enviar_solicitud():
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
         print(f"Error de base de datos al enviar solicitud (sqlstate: {sqlstate}): {ex}")
-        return jsonify({'success': False, 'message': f"Ocurrió un error en la base de datos: {ex}"}), 500
+        return jsonify({'success': False, 'message': 'No fue posible enviar la solicitud.'}), 500
     except Exception as e:
         print(f"Error inesperado al enviar solicitud: {e}")
-        return jsonify({'success': False, 'message': f"Ocurrió un error inesperado: {e}"}), 500
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
     finally:
         if conn:
             conn.close()
@@ -3566,10 +3699,10 @@ def mis_solicitudes_prestador():
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
         print(f"Error de base de datos al obtener solicitudes (sqlstate: {sqlstate}): {ex}")
-        return jsonify({'success': False, 'message': f"Error de base de datos: {ex}"}), 500
+        return jsonify({'success': False, 'message': 'No pudimos cargar la información.'}), 500
     except Exception as e:
         print(f"Error inesperado al obtener solicitudes: {e}")
-        return jsonify({'success': False, 'message': f"Error inesperado: {e}"}), 500
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
     finally:
         if conn:
             conn.close()
@@ -3623,10 +3756,10 @@ def mis_solicitudes_cliente():
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
         print(f"Error de base de datos al obtener solicitudes (sqlstate: {sqlstate}): {ex}")
-        return jsonify({'success': False, 'message': f"Error de base de datos: {ex}"}), 500
+        return jsonify({'success': False, 'message': 'No pudimos cargar la información.'}), 500
     except Exception as e:
         print(f"Error inesperado al obtener solicitudes: {e}")
-        return jsonify({'success': False, 'message': f"Error inesperado: {e}"}), 500
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
     finally:
         if conn:
             conn.close()
@@ -3679,7 +3812,11 @@ def mobile_enviar_solicitud():
             return jsonify({'success': False, 'message': 'Publicación no encontrada o no activa.'}), 404
         prestador_id = publicacion[0]
         if prestador_id == user_id:
-            return validation_response({'publicacion_id': 'No puedes solicitar tu propia publicación.'})
+            return validation_response(
+                {'publicacion_id': 'No puedes solicitar un servicio publicado por tu propia cuenta.'},
+                'No puedes solicitar un servicio publicado por tu propia cuenta.',
+                403
+            )
 
         cursor.execute("""
             SELECT TOP 1 id
@@ -3729,14 +3866,21 @@ def mobile_mis_solicitudes_prestador():
             SELECT s.id, s.FechaSolicitud, s.FechaServicio, s.HoraServicio, s.MensajeCliente, s.Estado,
                    p.Titulo, p.Precio, p.Categoria,
                    per.Nombre, per.ApellidoP, per.ApellidoM, per.Telefono, per.FotoPerfil,
-                   u.Email
+                   u.Email,
+                   r_mia.Calificacion AS mi_calificacion,
+                   r_mia.Comentario AS mi_comentario,
+                   r_mia.CreadoEn AS mi_resena_fecha,
+                   CASE WHEN pg.id IS NULL THEN 0 ELSE 1 END AS PagoCompletado
             FROM SolicitudesServicios s
             INNER JOIN Publicaciones p ON s.PublicacionId = p.id
             INNER JOIN Usuarios u ON s.ClienteId = u.id
             INNER JOIN Personas per ON u.id = per.UsuarioId
+            LEFT JOIN Resenas r_mia ON r_mia.SolicitudServicioId = s.id AND r_mia.RevisorId = ?
+            LEFT JOIN Pagos pg ON pg.SolicitudServicioId = s.id
+                AND pg.EstatusId = (SELECT id FROM Estatus WHERE Nombre = 'completado')
             WHERE s.PrestadorId = ?
             ORDER BY s.FechaSolicitud DESC
-        """, (user_id,))
+        """, (user_id, user_id))
         solicitudes = cursor.fetchall()
         solicitudes_list = []
         for sol in solicitudes:
@@ -3753,17 +3897,21 @@ def mobile_mis_solicitudes_prestador():
                 'cliente_nombre': f"{sol[9]} {sol[10]} {sol[11]}",
                 'cliente_telefono': descifrar_dato(sol[12]),
                 'cliente_foto': sol[13],
-                'cliente_email': sol[14]
+                'cliente_email': sol[14],
+                'mi_calificacion': sol[15],
+                'mi_comentario': sol[16] or '',
+                'mi_resena_fecha': fmt_datetime(sol[17]),
+                'pago_completado': bool(sol[18])
             })
         return jsonify({'success': True, 'solicitudes': solicitudes_list}), 200
 
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
         print(f"Error de base de datos al obtener solicitudes móviles prestador (sqlstate: {sqlstate}): {ex}")
-        return jsonify({'success': False, 'message': 'Error de base de datos.'}), 500
+        return jsonify({'success': False, 'message': 'No pudimos cargar la información.'}), 500
     except Exception as e:
         print(f"Error inesperado al obtener solicitudes móviles prestador: {e}")
-        return jsonify({'success': False, 'message': 'Error inesperado.'}), 500
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
     finally:
         if conn:
             conn.close()
@@ -3782,14 +3930,21 @@ def mobile_mis_solicitudes_cliente():
             SELECT s.id, s.FechaSolicitud, s.FechaServicio, s.HoraServicio, s.MensajeCliente, s.Estado,
                    p.Titulo, p.Precio, p.Categoria,
                    per.Nombre, per.ApellidoP, per.ApellidoM, per.Telefono, per.FotoPerfil,
-                   u.Email
+                   u.Email,
+                   r_mia.Calificacion AS mi_calificacion,
+                   r_mia.Comentario AS mi_comentario,
+                   r_mia.CreadoEn AS mi_resena_fecha,
+                   CASE WHEN pg.id IS NULL THEN 0 ELSE 1 END AS PagoCompletado
             FROM SolicitudesServicios s
             INNER JOIN Publicaciones p ON s.PublicacionId = p.id
             INNER JOIN Usuarios u ON s.PrestadorId = u.id
             INNER JOIN Personas per ON u.id = per.UsuarioId
+            LEFT JOIN Resenas r_mia ON r_mia.SolicitudServicioId = s.id AND r_mia.RevisorId = ?
+            LEFT JOIN Pagos pg ON pg.SolicitudServicioId = s.id
+                AND pg.EstatusId = (SELECT id FROM Estatus WHERE Nombre = 'completado')
             WHERE s.ClienteId = ?
             ORDER BY s.FechaSolicitud DESC
-        """, (user_id,))
+        """, (user_id, user_id))
         solicitudes = cursor.fetchall()
         solicitudes_list = []
         for sol in solicitudes:
@@ -3806,17 +3961,21 @@ def mobile_mis_solicitudes_cliente():
                 'prestador_nombre': f"{sol[9]} {sol[10]} {sol[11]}",
                 'prestador_telefono': descifrar_dato(sol[12]),
                 'prestador_foto': sol[13],
-                'prestador_email': sol[14]
+                'prestador_email': sol[14],
+                'mi_calificacion': sol[15],
+                'mi_comentario': sol[16] or '',
+                'mi_resena_fecha': fmt_datetime(sol[17]),
+                'pago_completado': bool(sol[18])
             })
         return jsonify({'success': True, 'solicitudes': solicitudes_list}), 200
 
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
         print(f"Error de base de datos al obtener solicitudes móviles cliente (sqlstate: {sqlstate}): {ex}")
-        return jsonify({'success': False, 'message': 'Error de base de datos.'}), 500
+        return jsonify({'success': False, 'message': 'No pudimos cargar la información.'}), 500
     except Exception as e:
         print(f"Error inesperado al obtener solicitudes móviles cliente: {e}")
-        return jsonify({'success': False, 'message': 'Error inesperado.'}), 500
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
     finally:
         if conn:
             conn.close()
@@ -3864,7 +4023,7 @@ def mobile_crear_publicacion():
     except ValueError as e:
         if conn:
             conn.rollback()
-        return jsonify({'success': False, 'message': str(e)}), 400
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 400
     except pyodbc.Error as ex:
         if conn:
             conn.rollback()
@@ -3983,6 +4142,222 @@ def mobile_profile_reviews_response(user_id):
         if conn:
             conn.close()
 
+
+@app.route('/api/mobile/solicitudes/<int:solicitud_id>/mensajes', methods=['GET'])
+@jwt_required()
+def mobile_obtener_mensajes_solicitud(solicitud_id):
+    user, response, status = load_mobile_jwt_user()
+    if response is not None:
+        return response, status
+    user_id = user['id']
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT ss.ClienteId, ss.PrestadorId, p.Titulo,
+                   per_otro.Nombre, per_otro.ApellidoP, per_otro.ApellidoM, per_otro.FotoPerfil,
+                   h.id
+            FROM SolicitudesServicios ss
+            INNER JOIN Publicaciones p ON ss.PublicacionId = p.id
+            LEFT JOIN Hilos h ON h.SolicitudServicioId = ss.id
+            INNER JOIN Usuarios u_otro ON (u_otro.id = ss.ClienteId OR u_otro.id = ss.PrestadorId) AND u_otro.id <> ?
+            INNER JOIN Personas per_otro ON per_otro.UsuarioId = u_otro.id
+            WHERE ss.id = ?
+        """, (user_id, solicitud_id))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'success': False, 'message': 'Solicitud no encontrada.'}), 404
+        if row[0] != user_id and row[1] != user_id:
+            return jsonify({'success': False, 'message': 'No tienes permiso para ver esta conversación.'}), 403
+
+        hilo_id = row[7]
+        mensajes = []
+        if hilo_id:
+            cursor.execute("""
+                SELECT m.id, m.EmisorId, m.Cuerpo, m.EnviadoEn,
+                       per.Nombre, per.ApellidoP, per.ApellidoM
+                FROM Mensajes m
+                LEFT JOIN Personas per ON m.EmisorId = per.UsuarioId
+                WHERE m.HiloId = ?
+                ORDER BY m.EnviadoEn ASC
+            """, (hilo_id,))
+            for msg in cursor.fetchall():
+                mensajes.append({
+                    'id': msg[0],
+                    'emisor_id': msg[1],
+                    'cuerpo': descifrar_dato(msg[2]) or '',
+                    'enviado_en': msg[3].strftime('%d/%m/%Y %H:%M') if msg[3] else '',
+                    'emisor_nombre': f"{msg[4] or ''} {msg[5] or ''} {msg[6] or ''}".strip() or 'JobNest',
+                    'es_mio': msg[1] == user_id,
+                    'es_sistema': msg[1] is None,
+                })
+
+        return jsonify({
+            'success': True,
+            'hilo_id': hilo_id,
+            'solicitud_id': solicitud_id,
+            'servicio': row[2],
+            'contraparte': f"{row[3] or ''} {row[4] or ''} {row[5] or ''}".strip() or 'Usuario JobNest',
+            'contraparte_foto': row[6],
+            'mensajes': mensajes,
+        }), 200
+    except pyodbc.Error as ex:
+        print(f"Error de base de datos al obtener mensajes móviles (sqlstate: {ex.args[0]}): {ex}")
+        return jsonify({'success': False, 'message': 'No fue posible cargar los mensajes.'}), 500
+    except Exception as e:
+        print(f"Error inesperado al obtener mensajes móviles: {e}")
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/mobile/solicitudes/<int:solicitud_id>/mensajes', methods=['POST'])
+@jwt_required()
+def mobile_enviar_mensaje_solicitud(solicitud_id):
+    user, response, status = load_mobile_jwt_user()
+    if response is not None:
+        return response, status
+    user_id = user['id']
+    data = request.get_json(silent=True) or {}
+    mensaje = clean_text(data.get('mensaje'))
+    if not mensaje:
+        return validation_response({'mensaje': 'El mensaje no puede estar vacío.'})
+    if len(mensaje) > 1000:
+        return validation_response({'mensaje': 'El mensaje debe tener máximo 1000 caracteres.'})
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT ClienteId, PrestadorId FROM SolicitudesServicios WHERE id = ?", (solicitud_id,))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'success': False, 'message': 'Solicitud no encontrada.'}), 404
+        if row[0] != user_id and row[1] != user_id:
+            return jsonify({'success': False, 'message': 'No tienes permiso para escribir en esta conversación.'}), 403
+
+        cursor.execute("SELECT id FROM Hilos WHERE SolicitudServicioId = ?", (solicitud_id,))
+        hilo = cursor.fetchone()
+        if hilo:
+            hilo_id = hilo[0]
+        else:
+            cursor.execute(
+                "INSERT INTO Hilos (SolicitudServicioId, CreadoEn) OUTPUT INSERTED.id VALUES (?, GETDATE())",
+                (solicitud_id,)
+            )
+            hilo_id = cursor.fetchone()[0]
+
+        cursor.execute("""
+            INSERT INTO Mensajes (HiloId, EmisorId, Cuerpo, EnviadoEn)
+            VALUES (?, ?, ?, GETDATE())
+        """, (hilo_id, user_id, cifrar_dato(mensaje)))
+        conn.commit()
+        return jsonify({'success': True, 'message': 'Mensaje enviado.', 'hilo_id': int(hilo_id)}), 200
+    except pyodbc.Error as ex:
+        if conn:
+            conn.rollback()
+        print(f"Error de base de datos al enviar mensaje móvil (sqlstate: {ex.args[0]}): {ex}")
+        return jsonify({'success': False, 'message': 'No fue posible enviar el mensaje.'}), 500
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Error inesperado al enviar mensaje móvil: {e}")
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/mobile/calificar_servicio', methods=['POST'])
+@jwt_required()
+def mobile_calificar_servicio():
+    user, response, status = load_mobile_jwt_user()
+    if response is not None:
+        return response, status
+    data = request.get_json(silent=True) or {}
+    user_id = user['id']
+    tipo = user['tipo_usuario']
+    solicitud_id = data.get('solicitud_id')
+    calificacion = data.get('calificacion')
+    comentario = clean_text(data.get('comentario'))
+
+    try:
+        solicitud_id = int(solicitud_id)
+    except (TypeError, ValueError):
+        return validation_response({'solicitud_id': 'La solicitud no es válida.'})
+    try:
+        calificacion = int(calificacion)
+    except (TypeError, ValueError):
+        return validation_response({'calificacion': 'Selecciona una calificación.'})
+    if calificacion < 1 or calificacion > 5:
+        return validation_response({'calificacion': 'La calificación debe ser de 1 a 5 estrellas.'})
+    if len(comentario) > 1000:
+        return validation_response({'comentario': 'El comentario debe tener máximo 1000 caracteres.'})
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT s.ClienteId, s.PrestadorId, s.Estado, p.Precio
+            FROM SolicitudesServicios s
+            INNER JOIN Publicaciones p ON s.PublicacionId = p.id
+            WHERE s.id = ?
+        """, (solicitud_id,))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'success': False, 'message': 'Solicitud no encontrada.'}), 404
+        cliente_id, prestador_id, estado, precio = row[0], row[1], row[2], row[3]
+        if user_id not in {cliente_id, prestador_id}:
+            return jsonify({'success': False, 'message': 'No tienes permiso para calificar este servicio.'}), 403
+        estado_actual = normalize_request_state(estado)
+        precio_servicio = float(precio) if precio else 0
+        if estado_actual in REQUEST_CANCELLED_STATES or estado_actual == 'rechazada':
+            return jsonify({'success': False, 'message': 'No puedes calificar un servicio cancelado o rechazado.'}), 409
+        if estado_actual not in REQUEST_COMPLETED_STATES:
+            return jsonify({'success': False, 'message': 'Podrás calificar cuando el servicio esté concluido.'}), 409
+        if precio_servicio > 0 and not completed_payment_exists(cursor, solicitud_id):
+            return jsonify({'success': False, 'message': 'Podrás calificar cuando el pago esté registrado.'}), 409
+
+        evaluado_id = prestador_id if tipo == 'cliente' else cliente_id
+        cursor.execute("SELECT id FROM Resenas WHERE SolicitudServicioId = ? AND RevisorId = ?", (solicitud_id, user_id))
+        if cursor.fetchone():
+            return jsonify({'success': False, 'message': 'Tú ya calificaste este servicio.'}), 409
+        cursor.execute("""
+            INSERT INTO Resenas (SolicitudServicioId, RevisorId, EvaluadoId, Calificacion, Comentario, CreadoEn)
+            VALUES (?, ?, ?, ?, ?, GETDATE())
+        """, (solicitud_id, user_id, evaluado_id, calificacion, comentario))
+        cursor.execute("UPDATE SolicitudesServicios SET Estado = 'calificado' WHERE id = ?", (solicitud_id,))
+        if tipo == 'cliente':
+            cursor.execute("""
+                SELECT AVG(CAST(Calificacion AS FLOAT)), COUNT(*)
+                FROM Resenas
+                WHERE EvaluadoId = ? AND Calificacion IS NOT NULL
+            """, (evaluado_id,))
+            resumen = cursor.fetchone()
+            cursor.execute(
+                "UPDATE Prestadores SET RatingPromedio = ?, TotalResenas = ? WHERE UsuarioId = ?",
+                (resumen[0] or 0.0, resumen[1] or 0, evaluado_id)
+            )
+        conn.commit()
+        return jsonify({'success': True, 'message': 'Calificación guardada correctamente.'}), 200
+    except pyodbc.Error as ex:
+        if conn:
+            conn.rollback()
+        print(f"Error de base de datos al calificar desde móvil (sqlstate: {ex.args[0]}): {ex}")
+        return jsonify({'success': False, 'message': 'No fue posible guardar la calificación.'}), 500
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Error inesperado al calificar desde móvil: {e}")
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
+    finally:
+        if conn:
+            conn.close()
+
 # ==================== AGENDA ====================
 @app.route('/debug_solicitudes', methods=['GET'])
 def debug_solicitudes():
@@ -4010,7 +4385,7 @@ def debug_solicitudes():
             'total_solicitudes': len(solicitudes)
         }), 200
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -4117,10 +4492,10 @@ def obtener_eventos_agenda():
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
         print(f"Error de base de datos al obtener eventos de agenda (sqlstate: {sqlstate}): {ex}")
-        return jsonify({'success': False, 'message': f"Error de base de datos: {ex}"}), 500
+        return jsonify({'success': False, 'message': 'No pudimos cargar la información.'}), 500
     except Exception as e:
         print(f"Error inesperado al obtener eventos de agenda: {e}")
-        return jsonify({'success': False, 'message': f"Error inesperado: {e}"}), 500
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
     finally:
         if conn:
             conn.close()
@@ -4161,10 +4536,10 @@ def obtener_publicacion(publicacion_id):
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
         print(f"Error de base de datos al obtener publicación (sqlstate: {sqlstate}): {ex}")
-        return jsonify({'success': False, 'message': f"Error de base de datos: {ex}"}), 500
+        return jsonify({'success': False, 'message': 'No pudimos cargar la información.'}), 500
     except Exception as e:
         print(f"Error inesperado al obtener publicación: {e}")
-        return jsonify({'success': False, 'message': f"Error inesperado: {e}"}), 500
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
     finally:
         if conn:
             conn.close()
@@ -4220,14 +4595,14 @@ def editar_publicacion(publicacion_id):
     except ValueError as e:
         if conn:
             conn.rollback()
-        return jsonify({'success': False, 'message': str(e)}), 400
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 400
     except pyodbc.Error as ex:
         sqlstate = ex.args[0]
         print(f"Error de base de datos al editar publicación (sqlstate: {sqlstate}): {ex}")
-        return jsonify({'success': False, 'message': f"Ocurrió un error en la base de datos: {ex}"}), 500
+        return jsonify({'success': False, 'message': 'No pudimos completar la acción. Inténtalo nuevamente.'}), 500
     except Exception as e:
         print(f"Error inesperado al editar publicación: {e}")
-        return jsonify({'success': False, 'message': f"Ocurrió un error inesperado: {e}"}), 500
+        return jsonify({'success': False, 'message': 'Ocurrió un problema inesperado. Inténtalo nuevamente.'}), 500
     finally:
         if conn:
             conn.close()
@@ -4254,6 +4629,7 @@ def servicios_concluidos():
                     s.FechaServicio, p.Precio,
                     r_mia.Calificacion AS mi_calificacion,
                     r_mia.Comentario AS mi_comentario,
+                    r_mia.CreadoEn AS mi_resena_fecha,
                     r_recibida.Calificacion AS calificacion_recibida,
                     r_recibida.Comentario AS comentario_recibido
                 FROM SolicitudesServicios s
@@ -4262,7 +4638,10 @@ def servicios_concluidos():
                 INNER JOIN Personas per_pre ON u_pre.id = per_pre.UsuarioId
                 LEFT JOIN Resenas r_mia ON r_mia.SolicitudServicioId = s.id AND r_mia.RevisorId = ?
                 LEFT JOIN Resenas r_recibida ON r_recibida.SolicitudServicioId = s.id AND r_recibida.EvaluadoId = ?
+                LEFT JOIN Pagos pg ON pg.SolicitudServicioId = s.id
+                    AND pg.EstatusId = (SELECT id FROM Estatus WHERE Nombre = 'completado')
                 WHERE s.ClienteId = ? AND s.Estado IN ('concluido', 'calificado')
+                  AND (COALESCE(p.Precio, 0) = 0 OR pg.id IS NOT NULL)
                 ORDER BY s.FechaServicio DESC
             """, (user_id, user_id, user_id))
         else:
@@ -4273,6 +4652,7 @@ def servicios_concluidos():
                     s.FechaServicio, p.Precio,
                     r_mia.Calificacion AS mi_calificacion,
                     r_mia.Comentario AS mi_comentario,
+                    r_mia.CreadoEn AS mi_resena_fecha,
                     r_recibida.Calificacion AS calificacion_recibida,
                     r_recibida.Comentario AS comentario_recibido
                 FROM SolicitudesServicios s
@@ -4281,7 +4661,10 @@ def servicios_concluidos():
                 INNER JOIN Personas per_cli ON u_cli.id = per_cli.UsuarioId
                 LEFT JOIN Resenas r_mia ON r_mia.SolicitudServicioId = s.id AND r_mia.RevisorId = ?
                 LEFT JOIN Resenas r_recibida ON r_recibida.SolicitudServicioId = s.id AND r_recibida.EvaluadoId = ?
+                LEFT JOIN Pagos pg ON pg.SolicitudServicioId = s.id
+                    AND pg.EstatusId = (SELECT id FROM Estatus WHERE Nombre = 'completado')
                 WHERE s.PrestadorId = ? AND s.Estado IN ('concluido', 'calificado')
+                  AND (COALESCE(p.Precio, 0) = 0 OR pg.id IS NOT NULL)
                 ORDER BY s.FechaServicio DESC
             """, (user_id, user_id, user_id))
 
@@ -4296,14 +4679,15 @@ def servicios_concluidos():
                 'precio': float(row[6]) if row[6] else None,
                 'mi_calificacion': row[7],
                 'mi_comentario': row[8],
-                'calificacion_recibida': row[9],
-                'comentario_recibido': row[10]
+                'mi_resena_fecha': fmt_datetime(row[9]),
+                'calificacion_recibida': row[10],
+                'comentario_recibido': row[11]
             })
         return jsonify({'success': True, 'servicios': servicios}), 200
 
     except Exception as e:
         print(f"Error en servicios_concluidos: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -4330,13 +4714,26 @@ def calificar_servicio():
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        cursor.execute("SELECT ClienteId, PrestadorId FROM SolicitudesServicios WHERE id = ?", (solicitud_id,))
+        cursor.execute("""
+            SELECT s.ClienteId, s.PrestadorId, s.Estado, p.Precio
+            FROM SolicitudesServicios s
+            INNER JOIN Publicaciones p ON s.PublicacionId = p.id
+            WHERE s.id = ?
+        """, (solicitud_id,))
         row = cursor.fetchone()
         if not row:
             return jsonify({'success': False, 'message': 'Solicitud no encontrada'}), 404
 
         cliente_id = row[0]
         prestador_id = row[1]
+        estado_actual = normalize_request_state(row[2])
+        precio_servicio = float(row[3]) if row[3] else 0
+        if estado_actual in REQUEST_CANCELLED_STATES or estado_actual == 'rechazada':
+            return jsonify({'success': False, 'message': 'No puedes calificar un servicio cancelado o rechazado.'}), 409
+        if estado_actual not in REQUEST_COMPLETED_STATES:
+            return jsonify({'success': False, 'message': 'Podrás calificar cuando el servicio esté concluido.'}), 409
+        if precio_servicio > 0 and not completed_payment_exists(cursor, solicitud_id):
+            return jsonify({'success': False, 'message': 'Podrás calificar cuando el pago esté registrado.'}), 409
 
         if tipo == 'cliente':
             evaluado_id = prestador_id
@@ -4349,7 +4746,7 @@ def calificar_servicio():
             WHERE SolicitudServicioId = ? AND RevisorId = ?
         """, (solicitud_id, user_id))
         if cursor.fetchone():
-            return jsonify({'success': False, 'message': 'Ya calificaste esta solicitud.'}), 409
+            return jsonify({'success': False, 'message': 'Tú ya calificaste este servicio.'}), 409
 
         comentario_final = opcion_predeterminada
         if comentario:
@@ -4378,18 +4775,20 @@ def calificar_servicio():
 
         if tipo == 'cliente':
             cursor.execute("""
-                SELECT AVG(Calificacion) FROM Resenas
+                SELECT AVG(CAST(Calificacion AS FLOAT)), COUNT(*) FROM Resenas
                 WHERE EvaluadoId = ? AND Calificacion IS NOT NULL
             """, (evaluado_id,))
-            avg_rating = cursor.fetchone()[0] or 0.0
-            cursor.execute("UPDATE Prestadores SET RatingPromedio = ? WHERE UsuarioId = ?", (avg_rating, evaluado_id))
+            resumen_resenas = cursor.fetchone()
+            avg_rating = resumen_resenas[0] or 0.0
+            total_resenas = resumen_resenas[1] or 0
+            cursor.execute("UPDATE Prestadores SET RatingPromedio = ?, TotalResenas = ? WHERE UsuarioId = ?", (avg_rating, total_resenas, evaluado_id))
 
         conn.commit()
         return jsonify({'success': True, 'message': 'Calificación guardada correctamente'}), 200
 
     except Exception as e:
         print(f"Error en calificar_servicio: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -4435,7 +4834,7 @@ def mis_conversaciones():
 
     except Exception as e:
         print(f"Error en mis_conversaciones: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -4484,7 +4883,7 @@ def obtener_mensajes(hilo_id):
 
     except Exception as e:
         print(f"Error en obtener_mensajes: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -4571,10 +4970,97 @@ def enviar_mensaje():
 
     except Exception as e:
         print(f"Error en enviar_mensaje: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
+
+REQUEST_CANCELABLE_STATES = {'pendiente', 'aceptada'}
+REQUEST_COMPLETED_STATES = {'concluido', 'concluida', 'calificado'}
+REQUEST_CANCELLED_STATES = {'cancelada', 'cancelada_cliente', 'cancelada_prestador'}
+
+
+def normalize_request_state(value):
+    return clean_text(value).lower()
+
+
+def humanize_label(value):
+    return clean_text(value).replace('_', ' ').strip().capitalize() or 'Evento'
+
+
+def validate_cancel_reason(value):
+    reason = clean_text(value)
+    if not reason:
+        return reason, 'El motivo de cancelación es obligatorio.'
+    if len(reason) < 10:
+        return reason, 'El motivo debe tener al menos 10 caracteres.'
+    if len(reason) > 500:
+        return reason, 'El motivo debe tener máximo 500 caracteres.'
+    return reason, ''
+
+
+def completed_payment_exists(cursor, solicitud_id):
+    cursor.execute("""
+        SELECT TOP 1 p.id
+        FROM Pagos p
+        INNER JOIN Estatus e ON p.EstatusId = e.id
+        WHERE p.SolicitudServicioId = ?
+          AND LOWER(e.Nombre) = 'completado'
+    """, (solicitud_id,))
+    return cursor.fetchone() is not None
+
+
+def get_request_history(cursor, solicitud_id):
+    eventos = []
+    cursor.execute("""
+        SELECT s.FechaSolicitud, s.FechaAceptacion, s.Estado
+        FROM SolicitudesServicios s
+        WHERE s.id = ?
+    """, (solicitud_id,))
+    solicitud = cursor.fetchone()
+    if solicitud:
+        eventos.append({'titulo': 'Solicitud creada', 'detalle': 'El cliente envió la solicitud.', 'fecha': fmt_datetime(solicitud[0])})
+        if solicitud[1]:
+            eventos.append({'titulo': 'Solicitud aceptada', 'detalle': 'El prestador aceptó la solicitud.', 'fecha': fmt_datetime(solicitud[1])})
+        estado_actual = normalize_request_state(solicitud[2])
+        if estado_actual in REQUEST_COMPLETED_STATES:
+            eventos.append({'titulo': 'Trabajo concluido', 'detalle': 'El servicio fue marcado como concluido.', 'fecha': ''})
+        if estado_actual in REQUEST_CANCELLED_STATES:
+            eventos.append({'titulo': 'Servicio cancelado', 'detalle': 'El servicio fue cancelado.', 'fecha': ''})
+
+    if db_table_exists(cursor, 'Pagos'):
+        cursor.execute("""
+            SELECT p.PagadoEn, p.CreadoEn, COALESCE(e.Nombre, 'sin_estado'), p.Monto
+            FROM Pagos p
+            LEFT JOIN Estatus e ON p.EstatusId = e.id
+            WHERE p.SolicitudServicioId = ?
+            ORDER BY COALESCE(p.PagadoEn, p.CreadoEn)
+        """, (solicitud_id,))
+        for row in cursor.fetchall():
+            eventos.append({
+                'titulo': 'Pago registrado',
+                'detalle': f"Estado del pago: {row[2]}.",
+                'fecha': fmt_datetime(row[0] or row[1])
+            })
+
+    if db_table_exists(cursor, 'BitacoraAdmin'):
+        cursor.execute("""
+            SELECT TipoEvento, Detalle, CreadoEn
+            FROM BitacoraAdmin
+            WHERE Entidad = 'SolicitudesServicios' AND EntidadId = ?
+            ORDER BY CreadoEn
+        """, (solicitud_id,))
+        for row in cursor.fetchall():
+            tipo = row[0] or 'evento'
+            if tipo == 'solicitud_aceptada':
+                continue
+            eventos.append({
+                'titulo': humanize_label(tipo),
+                'detalle': row[1] or '',
+                'fecha': fmt_datetime(row[2])
+            })
+    return eventos
+
 
 # ==================== PAGOS ====================
 @app.route('/obtener_solicitudes_pendientes_pago', methods=['GET'])
@@ -4598,7 +5084,9 @@ def obtener_solicitudes_pendientes_pago():
             INNER JOIN Usuarios u ON s.PrestadorId = u.id
             INNER JOIN Personas per ON u.id = per.UsuarioId
             LEFT JOIN Pagos pg ON s.id = pg.SolicitudServicioId AND pg.EstatusId = (SELECT id FROM Estatus WHERE Nombre = 'completado')
-            WHERE s.ClienteId = ? AND s.Estado = 'aceptada' AND pg.id IS NULL
+            WHERE s.ClienteId = ?
+              AND LOWER(s.Estado) IN ('concluido', 'concluida', 'calificado')
+              AND pg.id IS NULL
             ORDER BY s.FechaServicio ASC
         """, (user_id,))
         rows = cursor.fetchall()
@@ -4615,7 +5103,7 @@ def obtener_solicitudes_pendientes_pago():
 
     except Exception as e:
         print(f"Error en obtener_solicitudes_pendientes_pago: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -4647,18 +5135,27 @@ def procesar_pago():
         cursor = conn.cursor()
 
         cursor.execute("""
-            SELECT s.id, p.Precio
+            SELECT s.id, p.Precio, s.Estado, pg.id
             FROM SolicitudesServicios s
             INNER JOIN Publicaciones p ON s.PublicacionId = p.id
             LEFT JOIN Pagos pg ON s.id = pg.SolicitudServicioId AND pg.EstatusId = (SELECT id FROM Estatus WHERE Nombre = 'completado')
-            WHERE s.id = ? AND s.ClienteId = ? AND s.Estado = 'aceptada' AND pg.id IS NULL
+            WHERE s.id = ? AND s.ClienteId = ?
         """, (solicitud_id, user_id))
         row = cursor.fetchone()
         if not row:
-            return jsonify({'success': False, 'message': 'La solicitud no es válida para pago'}), 400
+            return jsonify({'success': False, 'message': 'Solicitud no encontrada.'}), 404
+        estado_actual = normalize_request_state(row[2])
+        if estado_actual not in REQUEST_COMPLETED_STATES:
+            return jsonify({'success': False, 'message': 'Podrás realizar el pago cuando el servicio esté concluido.'}), 409
+        if row[3]:
+            return jsonify({'success': False, 'message': 'Este servicio ya tiene un pago registrado.'}), 409
 
-        precio_esperado = float(row[1]) if row[1] else 0
-        if monto != precio_esperado:
+        try:
+            monto_numero = round(float(monto), 2)
+        except (TypeError, ValueError):
+            return jsonify({'success': False, 'message': 'El monto no es válido.'}), 400
+        precio_esperado = round(float(row[1]) if row[1] else 0, 2)
+        if monto_numero != precio_esperado:
             return jsonify({'success': False, 'message': 'El monto no coincide con el precio del servicio'}), 400
 
         cursor.execute("SELECT id FROM MetodosPago WHERE Nombre = ?", (metodo_normalizado.capitalize(),))
@@ -4674,7 +5171,11 @@ def procesar_pago():
             cursor.execute("""
                 INSERT INTO Pagos (SolicitudServicioId, Monto, Moneda, MetodoId, EstatusId, Procesador, PagadoEn, CreadoEn)
                 VALUES (?, ?, 'MXN', ?, ?, 'Efectivo', GETDATE(), GETDATE())
-            """, (solicitud_id, monto, metodo_id, estatus_completado))
+            """, (solicitud_id, monto_numero, metodo_id, estatus_completado))
+            safe_audit_event(cursor, 'pago_registrado', 'SolicitudesServicios', solicitud_id,
+                             'Pago registrado por el cliente.', usuario_id=user_id, actor_id=user_id,
+                             valor_anterior=estado_actual, valor_nuevo='pago_completado')
+            safe_request_system_message(cursor, solicitud_id, 'Pago registrado por el cliente.')
             conn.commit()
             return jsonify({'success': True, 'message': 'Pago registrado exitosamente. El servicio ha sido pagado.'}), 200
 
@@ -4709,13 +5210,17 @@ def procesar_pago():
             cursor.execute("""
                 INSERT INTO Pagos (SolicitudServicioId, Monto, Moneda, MetodoId, EstatusId, Procesador, ProcesadorChargeId, PagadoEn, CreadoEn)
                 VALUES (?, ?, 'MXN', ?, ?, 'Simulación', ?, GETDATE(), GETDATE())
-            """, (solicitud_id, monto, metodo_id, estatus_completado, cifrar_dato(transaccion_id)))
+            """, (solicitud_id, monto_numero, metodo_id, estatus_completado, cifrar_dato(transaccion_id)))
+            safe_audit_event(cursor, 'pago_registrado', 'SolicitudesServicios', solicitud_id,
+                             'Pago registrado por el cliente.', usuario_id=user_id, actor_id=user_id,
+                             valor_anterior=estado_actual, valor_nuevo='pago_completado')
+            safe_request_system_message(cursor, solicitud_id, 'Pago registrado por el cliente.')
             conn.commit()
             return jsonify({'success': True, 'message': 'Pago procesado exitosamente', 'transaccion_id': transaccion_id}), 200
 
     except Exception as e:
         print(f"Error en procesar_pago: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -4783,6 +5288,10 @@ def actualizar_estado_solicitud(solicitud_id):
                 return jsonify({'success': False, 'message': 'No tienes permiso para modificar esta solicitud'}), 403
             return jsonify({'success': False, 'message': f"La solicitud ya fue atendida y no puede modificarse nuevamente. Estado actual: {estado_actual[0]}."}), 409
 
+        safe_audit_event(cursor, f'solicitud_{nuevo_estado}', 'SolicitudesServicios', solicitud_id,
+                         f'Solicitud {nuevo_estado} por el prestador.', usuario_id=cliente_id, actor_id=user_id,
+                         valor_anterior='pendiente', valor_nuevo=nuevo_estado)
+
         # Enviar correo al cliente
         cursor.execute("SELECT Email FROM Usuarios WHERE id = ?", (cliente_id,))
         cliente_email = cursor.fetchone()[0]
@@ -4828,10 +5337,327 @@ def actualizar_estado_solicitud(solicitud_id):
 
     except Exception as e:
         print(f"Error en actualizar_estado_solicitud: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
+
+
+@app.route('/cancelar_solicitud/<int:solicitud_id>', methods=['POST'])
+def cancelar_solicitud(solicitud_id):
+    if 'usuario_autenticado' not in session or not session['usuario_autenticado']:
+        return jsonify({'success': False, 'message': 'No autenticado'}), 401
+
+    data = request.get_json(silent=True) or {}
+    motivo, motivo_error = validate_cancel_reason(data.get('motivo'))
+    if motivo_error:
+        return jsonify({'success': False, 'message': motivo_error, 'errors': {'motivo': motivo_error}}), 400
+
+    user_id = session['user_id']
+    tipo = session['tipo_usuario']
+    if tipo not in {'cliente', 'prestador'}:
+        return jsonify({'success': False, 'message': 'No tienes permiso para realizar esta acción.'}), 403
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT s.ClienteId, s.PrestadorId, s.Estado, p.Titulo
+            FROM SolicitudesServicios s
+            INNER JOIN Publicaciones p ON s.PublicacionId = p.id
+            WHERE s.id = ?
+        """, (solicitud_id,))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'success': False, 'message': 'Solicitud no encontrada.'}), 404
+
+        cliente_id, prestador_id, estado, titulo_servicio = row
+        estado_actual = normalize_request_state(estado)
+        if tipo == 'cliente':
+            if cliente_id != user_id:
+                return jsonify({'success': False, 'message': 'No tienes permiso para cancelar esta solicitud.'}), 403
+            nuevo_estado = 'cancelada_cliente'
+            actor_texto = 'cliente'
+            destinatario_id = prestador_id
+        else:
+            if prestador_id != user_id:
+                return jsonify({'success': False, 'message': 'No tienes permiso para cancelar esta solicitud.'}), 403
+            nuevo_estado = 'cancelada_prestador'
+            actor_texto = 'prestador'
+            destinatario_id = cliente_id
+
+        if estado_actual in REQUEST_CANCELLED_STATES:
+            return jsonify({'success': False, 'message': 'Este servicio ya fue cancelado.'}), 409
+        if estado_actual not in REQUEST_CANCELABLE_STATES:
+            return jsonify({'success': False, 'message': 'El estado actual del servicio no permite esta operación.'}), 409
+
+        cursor.execute("""
+            UPDATE SolicitudesServicios
+            SET Estado = ?
+            WHERE id = ? AND Estado IN ('pendiente', 'aceptada')
+        """, (nuevo_estado, solicitud_id))
+        if cursor.rowcount != 1:
+            conn.rollback()
+            return jsonify({'success': False, 'message': 'El estado actual del servicio no permite esta operación.'}), 409
+
+        detalle = f"Servicio cancelado por {actor_texto}. Motivo: {motivo}"
+        safe_audit_event(cursor, 'servicio_cancelado', 'SolicitudesServicios', solicitud_id, detalle,
+                         usuario_id=destinatario_id, actor_id=user_id, valor_anterior=estado_actual, valor_nuevo=nuevo_estado)
+        safe_crear_alerta(cursor, 'servicio_cancelado', 'Servicio cancelado',
+                          f'El servicio "{titulo_servicio}" fue cancelado. Motivo: {motivo}',
+                          usuario_id=destinatario_id, entidad='SolicitudesServicios', entidad_id=solicitud_id, prioridad='alta')
+        safe_request_system_message(cursor, solicitud_id, f'El servicio fue cancelado por {actor_texto}. Motivo: {motivo}')
+        conn.commit()
+        record_business_event('servicio_cancelado', 'web')
+        return jsonify({'success': True, 'message': 'El servicio fue cancelado correctamente.'}), 200
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Error en cancelar_solicitud: {e}")
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/historial_solicitud/<int:solicitud_id>', methods=['GET'])
+def historial_solicitud(solicitud_id):
+    if 'usuario_autenticado' not in session or not session['usuario_autenticado']:
+        return jsonify({'success': False, 'message': 'No autenticado'}), 401
+
+    user_id = session['user_id']
+    tipo = session['tipo_usuario']
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT ClienteId, PrestadorId
+            FROM SolicitudesServicios
+            WHERE id = ?
+        """, (solicitud_id,))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'success': False, 'message': 'Solicitud no encontrada.'}), 404
+        if tipo == 'cliente' and row[0] != user_id:
+            return jsonify({'success': False, 'message': 'No tienes permiso para ver esta solicitud.'}), 403
+        if tipo == 'prestador' and row[1] != user_id:
+            return jsonify({'success': False, 'message': 'No tienes permiso para ver esta solicitud.'}), 403
+        if tipo not in {'cliente', 'prestador', 'administrador'}:
+            return jsonify({'success': False, 'message': 'No tienes permiso para ver esta solicitud.'}), 403
+        eventos = get_request_history(cursor, solicitud_id)
+        return jsonify({'success': True, 'historial': eventos}), 200
+    except Exception as e:
+        print(f"Error en historial_solicitud: {e}")
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/mobile/cancelar_solicitud/<int:solicitud_id>', methods=['POST'])
+@mobile_role_required('cliente', 'prestador')
+def mobile_cancelar_solicitud(solicitud_id):
+    data = request.get_json(silent=True) or {}
+    motivo, motivo_error = validate_cancel_reason(data.get('motivo'))
+    if motivo_error:
+        return jsonify({'success': False, 'message': motivo_error, 'errors': {'motivo': motivo_error}}), 400
+
+    user_id = g.mobile_user['id']
+    tipo = 'prestador' if g.mobile_user['tipo_usuario'] == 'prestador' else 'cliente'
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT s.ClienteId, s.PrestadorId, s.Estado, p.Titulo
+            FROM SolicitudesServicios s
+            INNER JOIN Publicaciones p ON s.PublicacionId = p.id
+            WHERE s.id = ?
+        """, (solicitud_id,))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'success': False, 'message': 'Solicitud no encontrada.'}), 404
+        cliente_id, prestador_id, estado, titulo_servicio = row
+        estado_actual = normalize_request_state(estado)
+        if tipo == 'cliente':
+            if cliente_id != user_id:
+                return jsonify({'success': False, 'message': 'No tienes permiso para cancelar esta solicitud.'}), 403
+            nuevo_estado = 'cancelada_cliente'
+            actor_texto = 'cliente'
+            destinatario_id = prestador_id
+        else:
+            if prestador_id != user_id:
+                return jsonify({'success': False, 'message': 'No tienes permiso para cancelar esta solicitud.'}), 403
+            nuevo_estado = 'cancelada_prestador'
+            actor_texto = 'prestador'
+            destinatario_id = cliente_id
+        if estado_actual in REQUEST_CANCELLED_STATES:
+            return jsonify({'success': False, 'message': 'Este servicio ya fue cancelado.'}), 409
+        if estado_actual not in REQUEST_CANCELABLE_STATES:
+            return jsonify({'success': False, 'message': 'El estado actual del servicio no permite esta operación.'}), 409
+        cursor.execute("""
+            UPDATE SolicitudesServicios
+            SET Estado = ?
+            WHERE id = ? AND Estado IN ('pendiente', 'aceptada')
+        """, (nuevo_estado, solicitud_id))
+        if cursor.rowcount != 1:
+            conn.rollback()
+            return jsonify({'success': False, 'message': 'El estado actual del servicio no permite esta operación.'}), 409
+        detalle = f"Servicio cancelado por {actor_texto}. Motivo: {motivo}"
+        safe_audit_event(cursor, 'servicio_cancelado', 'SolicitudesServicios', solicitud_id, detalle,
+                         usuario_id=destinatario_id, actor_id=user_id, valor_anterior=estado_actual, valor_nuevo=nuevo_estado)
+        safe_crear_alerta(cursor, 'servicio_cancelado', 'Servicio cancelado',
+                          f'El servicio "{titulo_servicio}" fue cancelado. Motivo: {motivo}',
+                          usuario_id=destinatario_id, entidad='SolicitudesServicios', entidad_id=solicitud_id, prioridad='alta')
+        safe_request_system_message(cursor, solicitud_id, f'El servicio fue cancelado por {actor_texto}. Motivo: {motivo}')
+        conn.commit()
+        record_business_event('servicio_cancelado', 'mobile')
+        return jsonify({'success': True, 'message': 'El servicio fue cancelado correctamente.'}), 200
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Error en mobile_cancelar_solicitud: {e}")
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/mobile/actualizar_estado_solicitud/<int:solicitud_id>', methods=['POST'])
+@mobile_role_required('prestador')
+def mobile_actualizar_estado_solicitud(solicitud_id):
+    data = request.get_json(silent=True) or {}
+    nuevo_estado = data.get('estado')
+    if nuevo_estado not in ['aceptada', 'rechazada']:
+        return jsonify({'success': False, 'message': 'Estado no válido'}), 400
+
+    user_id = g.mobile_user['id']
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT s.Estado, s.ClienteId, p.Titulo
+            FROM SolicitudesServicios s
+            INNER JOIN Publicaciones p ON s.PublicacionId = p.id
+            WHERE s.id = ? AND s.PrestadorId = ?
+        """, (solicitud_id, user_id))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'success': False, 'message': 'Solicitud no encontrada.'}), 404
+        estado_actual = normalize_request_state(row[0])
+        if estado_actual != 'pendiente':
+            return jsonify({'success': False, 'message': 'La solicitud ya fue atendida y no puede modificarse nuevamente.'}), 409
+        if nuevo_estado == 'aceptada':
+            cursor.execute("""
+                UPDATE SolicitudesServicios
+                SET Estado = ?, FechaAceptacion = GETDATE()
+                WHERE id = ? AND PrestadorId = ? AND Estado = 'pendiente'
+            """, (nuevo_estado, solicitud_id, user_id))
+        else:
+            cursor.execute("""
+                UPDATE SolicitudesServicios
+                SET Estado = ?
+                WHERE id = ? AND PrestadorId = ? AND Estado = 'pendiente'
+            """, (nuevo_estado, solicitud_id, user_id))
+        if cursor.rowcount != 1:
+            conn.rollback()
+            return jsonify({'success': False, 'message': 'La solicitud ya fue atendida y no puede modificarse nuevamente.'}), 409
+        safe_audit_event(cursor, f'solicitud_{nuevo_estado}', 'SolicitudesServicios', solicitud_id,
+                         f'Solicitud {nuevo_estado} por el prestador.', usuario_id=row[1], actor_id=user_id,
+                         valor_anterior='pendiente', valor_nuevo=nuevo_estado)
+        if nuevo_estado == 'aceptada':
+            safe_request_system_message(cursor, solicitud_id, f'Solicitud aceptada para el servicio: {row[2]}.')
+        else:
+            safe_request_system_message(cursor, solicitud_id, f'Solicitud rechazada para el servicio: {row[2]}.')
+        conn.commit()
+        return jsonify({'success': True, 'message': f'Solicitud {nuevo_estado}'}), 200
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Error en mobile_actualizar_estado_solicitud: {e}")
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/mobile/marcar_concluido/<int:solicitud_id>', methods=['POST'])
+@mobile_role_required('prestador')
+def mobile_marcar_concluido(solicitud_id):
+    user_id = g.mobile_user['id']
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT s.Estado, s.ClienteId, p.Titulo
+            FROM SolicitudesServicios s
+            INNER JOIN Publicaciones p ON s.PublicacionId = p.id
+            WHERE s.id = ? AND s.PrestadorId = ?
+        """, (solicitud_id, user_id))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'success': False, 'message': 'Solicitud no encontrada.'}), 404
+        estado_actual = normalize_request_state(row[0])
+        if estado_actual in REQUEST_CANCELLED_STATES:
+            return jsonify({'success': False, 'message': 'No se puede concluir un servicio cancelado.'}), 409
+        if estado_actual in REQUEST_COMPLETED_STATES:
+            return jsonify({'success': False, 'message': 'Este servicio ya fue marcado como concluido.'}), 409
+        if estado_actual != 'aceptada':
+            return jsonify({'success': False, 'message': 'El estado actual del servicio no permite esta operación.'}), 409
+        cursor.execute("""
+            UPDATE SolicitudesServicios
+            SET Estado = 'concluido'
+            WHERE id = ? AND PrestadorId = ? AND Estado = 'aceptada'
+        """, (solicitud_id, user_id))
+        if cursor.rowcount != 1:
+            conn.rollback()
+            return jsonify({'success': False, 'message': 'El estado actual del servicio no permite esta operación.'}), 409
+        safe_audit_event(cursor, 'servicio_concluido', 'SolicitudesServicios', solicitud_id,
+                         'Trabajo marcado como concluido por el prestador.', usuario_id=row[1], actor_id=user_id,
+                         valor_anterior=estado_actual, valor_nuevo='concluido')
+        safe_request_system_message(cursor, solicitud_id, 'El prestador marcó el trabajo como concluido.')
+        conn.commit()
+        return jsonify({'success': True, 'message': 'Trabajo marcado como concluido'}), 200
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"Error en mobile_marcar_concluido: {e}")
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/api/mobile/historial_solicitud/<int:solicitud_id>', methods=['GET'])
+@mobile_role_required('cliente', 'prestador')
+def mobile_historial_solicitud(solicitud_id):
+    user_id = g.mobile_user['id']
+    tipo = g.mobile_user['tipo_usuario']
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT ClienteId, PrestadorId FROM SolicitudesServicios WHERE id = ?", (solicitud_id,))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'success': False, 'message': 'Solicitud no encontrada.'}), 404
+        if tipo == 'cliente' and row[0] != user_id:
+            return jsonify({'success': False, 'message': 'No tienes permiso para ver esta solicitud.'}), 403
+        if tipo == 'prestador' and row[1] != user_id:
+            return jsonify({'success': False, 'message': 'No tienes permiso para ver esta solicitud.'}), 403
+        return jsonify({'success': True, 'historial': get_request_history(cursor, solicitud_id)}), 200
+    except Exception as e:
+        print(f"Error en mobile_historial_solicitud: {e}")
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
 
 @app.route('/marcar_concluido/<int:solicitud_id>', methods=['POST'])
 def marcar_concluido(solicitud_id):
@@ -4847,18 +5673,44 @@ def marcar_concluido(solicitud_id):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT id FROM SolicitudesServicios WHERE id = ? AND PrestadorId = ? AND Estado = 'aceptada'",
-                       (solicitud_id, user_id))
-        if not cursor.fetchone():
-            return jsonify({'success': False, 'message': 'Solicitud no encontrada o no está aceptada'}), 404
+        cursor.execute("""
+            SELECT s.id, s.Estado, p.Titulo, s.ClienteId
+            FROM SolicitudesServicios s
+            INNER JOIN Publicaciones p ON s.PublicacionId = p.id
+            WHERE s.id = ? AND s.PrestadorId = ?
+        """, (solicitud_id, user_id))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'success': False, 'message': 'Solicitud no encontrada.'}), 404
+        estado_actual = normalize_request_state(row[1])
+        if estado_actual in REQUEST_CANCELLED_STATES:
+            return jsonify({'success': False, 'message': 'No se puede concluir un servicio cancelado.'}), 409
+        if estado_actual in REQUEST_COMPLETED_STATES:
+            return jsonify({'success': False, 'message': 'Este servicio ya fue marcado como concluido.'}), 409
+        if estado_actual != 'aceptada':
+            return jsonify({'success': False, 'message': 'El estado actual del servicio no permite esta operación.'}), 409
 
-        cursor.execute("UPDATE SolicitudesServicios SET Estado = 'concluido' WHERE id = ?", (solicitud_id,))
+        cursor.execute("""
+            UPDATE SolicitudesServicios
+            SET Estado = 'concluido'
+            WHERE id = ? AND PrestadorId = ? AND Estado = 'aceptada'
+        """, (solicitud_id, user_id))
+        if cursor.rowcount != 1:
+            conn.rollback()
+            return jsonify({'success': False, 'message': 'El estado actual del servicio no permite esta operación.'}), 409
+        safe_audit_event(cursor, 'servicio_concluido', 'SolicitudesServicios', solicitud_id,
+                         'Trabajo marcado como concluido por el prestador.', usuario_id=row[3], actor_id=user_id,
+                         valor_anterior=estado_actual, valor_nuevo='concluido')
+        safe_crear_alerta(cursor, 'servicio_concluido', 'Servicio concluido',
+                          f'El servicio "{row[2]}" fue marcado como concluido. Ya puedes revisar el pago.',
+                          usuario_id=row[3], entidad='SolicitudesServicios', entidad_id=solicitud_id)
+        safe_request_system_message(cursor, solicitud_id, 'El prestador marcó el trabajo como concluido.')
         conn.commit()
         return jsonify({'success': True, 'message': 'Trabajo marcado como concluido'}), 200
 
     except Exception as e:
         print(f"Error en marcar_concluido: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -4880,7 +5732,7 @@ def analytics_bad_request(message):
     return jsonify({'success': False, 'message': message}), 400
 
 
-def parse_iso_date(value, field_name):
+def parse_analytics_iso_date(value, field_name):
     if not value:
         return None
     try:
@@ -4938,13 +5790,13 @@ def analytics_period_from_request():
         start_date = today.replace(month=1, day=1)
         end_date = today
     else:
-        start_date = parse_iso_date(request.args.get('date_from'), 'date_from')
-        end_date = parse_iso_date(request.args.get('date_to'), 'date_to')
+        start_date = parse_analytics_iso_date(request.args.get('date_from'), 'date_from')
+        end_date = parse_analytics_iso_date(request.args.get('date_to'), 'date_to')
         if not start_date or not end_date:
             raise ValueError('date_from y date_to son obligatorios con preset custom.')
 
-    explicit_from = parse_iso_date(request.args.get('date_from'), 'date_from') if preset != 'custom' and request.args.get('date_from') else None
-    explicit_to = parse_iso_date(request.args.get('date_to'), 'date_to') if preset != 'custom' and request.args.get('date_to') else None
+    explicit_from = parse_analytics_iso_date(request.args.get('date_from'), 'date_from') if preset != 'custom' and request.args.get('date_from') else None
+    explicit_to = parse_analytics_iso_date(request.args.get('date_to'), 'date_to') if preset != 'custom' and request.args.get('date_to') else None
     if explicit_from:
         start_date = explicit_from
     if explicit_to:
@@ -5891,7 +6743,7 @@ def admin_resumen():
 
     except Exception as e:
         print(f"Error en admin_resumen: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -5941,7 +6793,215 @@ def admin_usuarios():
 
     except Exception as e:
         print(f"Error en admin_usuarios: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/admin/usuarios/<int:user_id>/detalle', methods=['GET'])
+def admin_detalle_usuario(user_id):
+    unauthorized = require_admin_session()
+    if unauthorized:
+        return unauthorized
+
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        ensure_control_schema(cursor)
+        cursor.execute("""
+            SELECT u.id, u.Email, u.Activo, u.CreadoEn, u.UltimoLogin,
+                   p.Nombre, p.ApellidoP, p.ApellidoM, p.Telefono, p.FotoPerfil,
+                   CASE WHEN pr.id IS NULL THEN 0 ELSE 1 END AS EsPrestador,
+                   pr.Verificado, pr.RatingPromedio, pr.TotalResenas,
+                   COALESCE(STRING_AGG(r.Nombre, ', '), '') AS Roles
+            FROM Usuarios u
+            LEFT JOIN Personas p ON u.id = p.UsuarioId
+            LEFT JOIN Prestadores pr ON u.id = pr.UsuarioId
+            LEFT JOIN UsuarioRoles ur ON u.id = ur.UsuarioId
+            LEFT JOIN Roles r ON ur.RolId = r.id
+            WHERE u.id = ?
+            GROUP BY u.id, u.Email, u.Activo, u.CreadoEn, u.UltimoLogin,
+                     p.Nombre, p.ApellidoP, p.ApellidoM, p.Telefono, p.FotoPerfil,
+                     pr.id, pr.Verificado, pr.RatingPromedio, pr.TotalResenas
+        """, (user_id,))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'success': False, 'message': 'Usuario no encontrado.'}), 404
+
+        roles = row[14] or ''
+        tipo = 'administrador' if row[1].lower() in get_admin_emails() or 'admin' in roles.lower() else ('prestador' if row[10] else 'cliente')
+        usuario = {
+            'id': row[0],
+            'email': row[1],
+            'activo': bool(row[2]),
+            'creado_en': fmt_datetime(row[3]),
+            'ultimo_login': fmt_datetime(row[4]),
+            'nombre': f"{row[5] or ''} {row[6] or ''} {row[7] or ''}".strip() or 'Sin perfil',
+            'telefono': descifrar_dato(row[8]) or '',
+            'foto_perfil': row[9],
+            'tipo_usuario': tipo,
+            'roles': [part.strip() for part in roles.split(',') if part.strip()],
+            'prestador': {
+                'verificado': bool(row[11]) if row[11] is not None else False,
+                'rating_promedio': float(row[12]) if row[12] is not None else None,
+                'total_resenas': int(row[13] or 0)
+            } if row[10] else None
+        }
+
+        cursor.execute("""
+            SELECT TOP 10 id, Titulo, Categoria, Precio, Activa, EstadoRevision, FechaCreacion
+            FROM Publicaciones
+            WHERE UsuarioId = ?
+            ORDER BY FechaCreacion DESC
+        """, (user_id,))
+        publicaciones = [{
+            'id': item[0],
+            'titulo': item[1],
+            'categoria': item[2],
+            'precio': float(item[3]) if item[3] else None,
+            'activa': bool(item[4]),
+            'estado_revision': item[5],
+            'fecha_creacion': fmt_datetime(item[6])
+        } for item in cursor.fetchall()]
+
+        cursor.execute("""
+            SELECT TOP 10 s.id, s.Estado, s.FechaSolicitud, s.FechaServicio, pub.Titulo,
+                   cli.Email, pre.Email
+            FROM SolicitudesServicios s
+            INNER JOIN Publicaciones pub ON s.PublicacionId = pub.id
+            LEFT JOIN Usuarios cli ON s.ClienteId = cli.id
+            LEFT JOIN Usuarios pre ON s.PrestadorId = pre.id
+            WHERE s.ClienteId = ? OR s.PrestadorId = ?
+            ORDER BY s.FechaSolicitud DESC
+        """, (user_id, user_id))
+        solicitudes = [{
+            'id': item[0],
+            'estado': item[1],
+            'fecha_solicitud': fmt_datetime(item[2]),
+            'fecha_servicio': fmt_date(item[3]),
+            'titulo_publicacion': item[4],
+            'cliente_email': item[5],
+            'prestador_email': item[6],
+            'rol_en_solicitud': 'cliente' if item[5] == usuario['email'] else 'prestador'
+        } for item in cursor.fetchall()]
+
+        cursor.execute("""
+            SELECT TOP 10 pg.id, pg.Monto, pg.CreadoEn, mp.Nombre, e.Nombre, pub.Titulo
+            FROM Pagos pg
+            INNER JOIN SolicitudesServicios s ON pg.SolicitudServicioId = s.id
+            INNER JOIN Publicaciones pub ON s.PublicacionId = pub.id
+            LEFT JOIN MetodosPago mp ON pg.MetodoId = mp.id
+            LEFT JOIN Estatus e ON pg.EstatusId = e.id
+            WHERE s.ClienteId = ? OR s.PrestadorId = ?
+            ORDER BY pg.CreadoEn DESC
+        """, (user_id, user_id))
+        pagos = [{
+            'id': item[0],
+            'monto': float(item[1]) if item[1] else 0,
+            'creado_en': fmt_datetime(item[2]),
+            'metodo': item[3] or 'Sin método',
+            'estado': item[4] or 'Sin estado',
+            'titulo_publicacion': item[5]
+        } for item in cursor.fetchall()]
+
+        cursor.execute("""
+            SELECT TOP 10 r.id, r.Calificacion, r.Comentario, r.CreadoEn,
+                   revisor.Email, evaluado.Email, pub.Titulo
+            FROM Resenas r
+            LEFT JOIN Usuarios revisor ON r.RevisorId = revisor.id
+            LEFT JOIN Usuarios evaluado ON r.EvaluadoId = evaluado.id
+            LEFT JOIN SolicitudesServicios s ON r.SolicitudServicioId = s.id
+            LEFT JOIN Publicaciones pub ON s.PublicacionId = pub.id
+            WHERE r.RevisorId = ? OR r.EvaluadoId = ?
+            ORDER BY r.CreadoEn DESC
+        """, (user_id, user_id))
+        resenas = [{
+            'id': item[0],
+            'calificacion': int(item[1]) if item[1] is not None else None,
+            'comentario': item[2] or '',
+            'creado_en': fmt_datetime(item[3]),
+            'revisor_email': item[4],
+            'evaluado_email': item[5],
+            'titulo_publicacion': item[6],
+            'tipo': 'realizada' if item[4] == usuario['email'] else 'recibida'
+        } for item in cursor.fetchall()]
+
+        cursor.execute("""
+            SELECT TOP 10 pt.id, pt.Titulo, pt.Descripcion, pt.ImagenUrl, pt.Activo, pt.CreadoEn,
+                   pub.Titulo
+            FROM PortafolioTrabajos pt
+            LEFT JOIN Publicaciones pub ON pt.PublicacionId = pub.id
+            WHERE pt.PrestadorId = ?
+            ORDER BY pt.CreadoEn DESC
+        """, (user_id,))
+        portafolio = [{
+            'id': item[0],
+            'titulo': item[1],
+            'descripcion': item[2] or '',
+            'imagen_url': item[3],
+            'activo': bool(item[4]),
+            'creado_en': fmt_datetime(item[5]),
+            'publicacion_titulo': item[6]
+        } for item in cursor.fetchall()]
+
+        cursor.execute("""
+            SELECT TOP 10 id, TipoUsuario, Motivo, Estado, CreadoEn, SolicitudServicioId, PublicacionId
+            FROM Quejas
+            WHERE UsuarioId = ?
+            ORDER BY CreadoEn DESC
+        """, (user_id,))
+        quejas = [{
+            'id': item[0],
+            'tipo_usuario': item[1],
+            'motivo': item[2],
+            'estado': item[3],
+            'creado_en': fmt_datetime(item[4]),
+            'solicitud_id': item[5],
+            'publicacion_id': item[6]
+        } for item in cursor.fetchall()]
+
+        cursor.execute("""
+            SELECT TOP 20 id, TipoEvento, Entidad, EntidadId, Detalle, CreadoEn
+            FROM BitacoraAdmin
+            WHERE UsuarioId = ? OR ActorId = ?
+            ORDER BY CreadoEn DESC
+        """, (user_id, user_id))
+        eventos = [{
+            'id': item[0],
+            'tipo_evento': item[1],
+            'entidad': item[2],
+            'entidad_id': item[3],
+            'detalle': item[4] or '',
+            'creado_en': fmt_datetime(item[5])
+        } for item in cursor.fetchall()]
+
+        return jsonify({
+            'success': True,
+            'usuario': usuario,
+            'resumen': {
+                'publicaciones': len(publicaciones),
+                'solicitudes_cliente': len([item for item in solicitudes if item['rol_en_solicitud'] == 'cliente']),
+                'solicitudes_prestador': len([item for item in solicitudes if item['rol_en_solicitud'] == 'prestador']),
+                'pagos': len(pagos),
+                'resenas_recibidas': len([item for item in resenas if item['tipo'] == 'recibida']),
+                'resenas_realizadas': len([item for item in resenas if item['tipo'] == 'realizada']),
+                'quejas': len(quejas),
+                'eventos': len(eventos)
+            },
+            'publicaciones': publicaciones,
+            'solicitudes': solicitudes,
+            'pagos': pagos,
+            'resenas': resenas,
+            'portafolio': portafolio,
+            'quejas': quejas,
+            'eventos': eventos
+        }), 200
+
+    except Exception as e:
+        print(f"Error en admin_detalle_usuario: {e}")
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -6005,7 +7065,7 @@ def admin_publicaciones():
 
     except Exception as e:
         print(f"Error en admin_publicaciones: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -6122,7 +7182,7 @@ def admin_detalle_publicacion(publicacion_id):
 
     except Exception as e:
         print(f"Error en admin_detalle_publicacion: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -6143,7 +7203,15 @@ def admin_solicitudes():
             SELECT TOP 40
                 s.id, s.FechaSolicitud, s.FechaServicio, s.Estado, p.Titulo, p.Precio,
                 cli.Nombre, cli.ApellidoP, cli.ApellidoM,
-                pre.Nombre, pre.ApellidoP, pre.ApellidoM
+                pre.Nombre, pre.ApellidoP, pre.ApellidoM,
+                (
+                    SELECT TOP 1 b.Detalle
+                    FROM BitacoraAdmin b
+                    WHERE b.Entidad = 'SolicitudesServicios'
+                      AND b.EntidadId = s.id
+                      AND b.TipoEvento = 'servicio_cancelado'
+                    ORDER BY b.CreadoEn DESC
+                ) AS DetalleCancelacion
             FROM SolicitudesServicios s
             INNER JOIN Publicaciones p ON s.PublicacionId = p.id
             LEFT JOIN Personas cli ON s.ClienteId = cli.UsuarioId
@@ -6158,14 +7226,15 @@ def admin_solicitudes():
             'titulo_publicacion': row[4],
             'precio': float(row[5]) if row[5] else None,
             'cliente_nombre': f"{row[6] or ''} {row[7] or ''} {row[8] or ''}".strip(),
-            'prestador_nombre': f"{row[9] or ''} {row[10] or ''} {row[11] or ''}".strip()
+            'prestador_nombre': f"{row[9] or ''} {row[10] or ''} {row[11] or ''}".strip(),
+            'detalle_cancelacion': row[12] or ''
         } for row in cursor.fetchall()]
 
         return jsonify({'success': True, 'solicitudes': solicitudes}), 200
 
     except Exception as e:
         print(f"Error en admin_solicitudes: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -6244,7 +7313,7 @@ def admin_pagos():
         return jsonify({'success': True, 'pagos': pagos, 'total': total, 'page': page, 'page_size': page_size}), 200
     except Exception as e:
         print(f"Error en admin_pagos: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -6292,7 +7361,7 @@ def admin_alertas():
         return jsonify({'success': True, 'alertas': alertas, 'total': total, 'page': page, 'page_size': page_size}), 200
     except Exception as e:
         print(f"Error en admin_alertas: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -6314,7 +7383,7 @@ def admin_marcar_alerta_leida(alerta_id):
         return jsonify({'success': True, 'message': 'Alerta marcada como leída.'}), 200
     except Exception as e:
         print(f"Error en admin_marcar_alerta_leida: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -6349,7 +7418,7 @@ def admin_toggle_usuario(user_id):
 
     except Exception as e:
         print(f"Error en admin_toggle_usuario: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -6383,7 +7452,7 @@ def admin_toggle_publicacion(publicacion_id):
 
     except Exception as e:
         print(f"Error en admin_toggle_publicacion: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -6488,7 +7557,7 @@ def admin_revisar_publicacion(publicacion_id):
 
     except Exception as e:
         print(f"Error en admin_revisar_publicacion: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -6537,7 +7606,7 @@ def admin_reactivar_publicacion(publicacion_id):
 
     except Exception as e:
         print(f"Error en admin_reactivar_publicacion: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -6576,10 +7645,10 @@ def subir_imagenes_publicacion(publicacion_id):
     except ValueError as e:
         if conn:
             conn.rollback()
-        return jsonify({'success': False, 'message': str(e)}), 400
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 400
     except Exception as e:
         print(f"Error en subir_imagenes_publicacion: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -6618,7 +7687,7 @@ def eliminar_imagen_publicacion(publicacion_id, imagen_id):
         return jsonify({'success': True, 'message': 'Imagen eliminada de la versión.'}), 200
     except Exception as e:
         print(f"Error en eliminar_imagen_publicacion: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -6649,7 +7718,7 @@ def admin_aprobar_imagen(imagen_id):
         return jsonify({'success': True, 'message': 'Imagen aprobada.'}), 200
     except Exception as e:
         print(f"Error en admin_aprobar_imagen: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -6686,7 +7755,7 @@ def admin_rechazar_imagen(imagen_id):
         return jsonify({'success': True, 'message': 'Imagen rechazada.'}), 200
     except Exception as e:
         print(f"Error en admin_rechazar_imagen: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -6726,7 +7795,7 @@ def crear_queja():
 
     except Exception as e:
         print(f"Error en crear_queja: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -6769,7 +7838,7 @@ def admin_quejas():
 
     except Exception as e:
         print(f"Error en admin_quejas: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -6810,7 +7879,7 @@ def admin_resolver_queja(queja_id):
 
     except Exception as e:
         print(f"Error en admin_resolver_queja: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -6849,7 +7918,7 @@ def admin_bitacora():
 
     except Exception as e:
         print(f"Error en admin_bitacora: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()
@@ -6967,7 +8036,7 @@ def chatbot_mensaje():
 
     except Exception as e:
         print(f"Error en chatbot: {e}")
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({'success': False, 'message': friendly_error_message(e)}), 500
     finally:
         if conn:
             conn.close()

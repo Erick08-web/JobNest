@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Power, Search, UsersRound } from "lucide-react";
+import Link from "next/link";
+import { Eye, Power, Search, UsersRound } from "lucide-react";
 import { AdminAlert, AdminBadge, AdminButton, AdminCard, AdminEmptyState, AdminPageHeader, AdminSearch, AdminSectionTitle, AdminSelect, AdminShell, AdminSkeleton, AdminToolbar, formatAdminDate, humanizeAdminText, statusTone } from "../components/AdminUI";
 import { fetchCurrentUser, listAdminUsers, toggleAdminUser, type AdminUser } from "../../lib/api";
 
@@ -86,6 +87,9 @@ export default function AdminUsersPage() {
                 </div>
                 <AdminBadge tone={statusTone(item.tipo_usuario)}>{humanizeAdminText(item.tipo_usuario)}</AdminBadge>
                 <AdminBadge tone={statusTone(item.activo)}>{item.activo ? "Activo" : "Inactivo"}</AdminBadge>
+                <Link className="adminButton" href={`/admin/usuarios/${item.id}`}>
+                  <Eye size={16} /> Ver usuario
+                </Link>
                 <AdminButton type="button" tone={item.activo ? "danger" : "success"} onClick={() => void toggleUser(item.id, item.activo)} disabled={workingId === item.id}>
                   <Power size={16} /> {item.activo ? "Desactivar" : "Activar"}
                 </AdminButton>

@@ -4,7 +4,7 @@ import { createBottomTabNavigator, type BottomTabBarProps } from '@react-navigat
 import { createNativeStackNavigator, type NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Pressable, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Ionicons from '@expo/vector-icons/Ionicons';
+import { Ionicons } from '@expo/vector-icons';
 import { ScreenFrame } from '../components/ScreenFrame';
 import { LoadingPill } from '../components/ui';
 import { useAuth } from '../context/AuthContext';
@@ -15,6 +15,7 @@ import { RegisterScreen } from '../screens/auth/RegisterScreen';
 import { ClientDashboardScreen } from '../screens/client/ClientDashboardScreen';
 import { ProviderDashboardScreen } from '../screens/provider/ProviderDashboardScreen';
 import { CreatePublicationScreen } from '../screens/provider/CreatePublicationScreen';
+import { ChatScreen } from '../screens/shared/ChatScreen';
 import { DetailScreen } from '../screens/shared/DetailScreen';
 import { ExploreScreen } from '../screens/shared/ExploreScreen';
 import { HomeScreen } from '../screens/shared/HomeScreen';
@@ -103,6 +104,8 @@ function AuthenticatedNavigator() {
     <AuthStack.Navigator screenOptions={{ headerShown: false }}>
       <AuthStack.Screen name="MainTabs" component={RoleTabsRoute} />
       <AuthStack.Screen name="Detail" component={AuthenticatedDetailRoute} />
+      <AuthStack.Screen name="Chat" component={AuthenticatedChatRoute} />
+      <AuthStack.Screen name="Publish" component={AuthenticatedPublishRoute} />
       <AuthStack.Screen name="Settings" component={AuthenticatedSettingsRoute} />
       <AuthStack.Screen name="ForgotPassword" component={AuthenticatedForgotPasswordRoute} />
     </AuthStack.Navigator>
@@ -250,6 +253,29 @@ function AuthenticatedDetailRoute({ navigation, route }: AuthProps<'Detail'>) {
   );
 }
 
+function AuthenticatedChatRoute({ navigation, route }: AuthProps<'Chat'>) {
+  return (
+    <ScreenFrame onHome={() => navigation.navigate('MainTabs')} onSettings={() => navigation.navigate('Settings')} scroll={false}>
+      <ChatScreen request={route.params.request} onBack={() => navigation.navigate('MainTabs', { screen: 'Requests' })} />
+    </ScreenFrame>
+  );
+}
+
+function AuthenticatedPublishRoute({ navigation }: AuthProps<'Publish'>) {
+  const data = useMobileData();
+  return (
+    <ScreenFrame onHome={() => navigation.navigate('MainTabs')} onSettings={() => navigation.navigate('Settings')}>
+      <CreatePublicationScreen
+        categories={data.categories}
+        onPublished={() => {
+          void data.loadPublications();
+          navigation.navigate('MainTabs');
+        }}
+      />
+    </ScreenFrame>
+  );
+}
+
 function RoleTabsRoute({ navigation }: AuthProps<'MainTabs'>) {
   const { currentUserType } = useAuth();
   const data = useMobileData();
@@ -275,7 +301,7 @@ function ClientTabsNavigator({
 
   return (
     <ClientTabs.Navigator screenOptions={commonScreenOptions}>
-      <ClientTabs.Screen name="ClientHome" options={{ title: 'Inicio' }}>
+      <ClientTabs.Screen name="ClientHome" options={{ title: 'Inicio', tabBarIcon: tabIcon('home', 'home-outline') }}>
         {() => (
           <ScreenFrame onHome={() => rootNavigation.navigate('MainTabs')} onSettings={() => rootNavigation.navigate('Settings')}>
             <ClientDashboardScreen
@@ -295,13 +321,13 @@ function ClientTabsNavigator({
           </ScreenFrame>
         )}
       </ClientTabs.Screen>
-      <ClientTabs.Screen name="ExploreTab" options={{ title: 'Explorar' }}>
+      <ClientTabs.Screen name="ExploreTab" options={{ title: 'Explorar', tabBarIcon: tabIcon('search', 'search-outline') }}>
         {() => <ExploreTabContent rootNavigation={rootNavigation} data={data} />}
       </ClientTabs.Screen>
-      <ClientTabs.Screen name="Requests" options={{ title: 'Solicitudes' }}>
+      <ClientTabs.Screen name="Requests" options={{ title: 'Solicitudes', tabBarIcon: tabIcon('clipboard', 'clipboard-outline') }}>
         {() => <RequestsTabContent rootNavigation={rootNavigation} data={data} />}
       </ClientTabs.Screen>
-      <ClientTabs.Screen name="Profile" options={{ title: 'Perfil' }}>
+      <ClientTabs.Screen name="Profile" options={{ title: 'Perfil', tabBarIcon: tabIcon('person-circle', 'person-circle-outline') }}>
         {() => <ProfileTabContent rootNavigation={rootNavigation} data={data} />}
       </ClientTabs.Screen>
     </ClientTabs.Navigator>
@@ -322,7 +348,7 @@ function ProviderTabsNavigator({
 
   return (
     <ProviderTabs.Navigator screenOptions={commonScreenOptions}>
-      <ProviderTabs.Screen name="ProviderHome" options={{ title: 'Inicio' }}>
+      <ProviderTabs.Screen name="ProviderHome" options={{ title: 'Inicio', tabBarIcon: tabIcon('home', 'home-outline') }}>
         {() => (
           <ScreenFrame onHome={() => rootNavigation.navigate('MainTabs')} onSettings={() => rootNavigation.navigate('Settings')}>
             <ProviderDashboardScreen
@@ -337,45 +363,29 @@ function ProviderTabsNavigator({
                 rootNavigation.navigate('MainTabs', { screen: 'Requests' });
                 void data.loadRequests();
               }}
-              onPublish={() => rootNavigation.navigate('MainTabs', { screen: 'Publish' })}
+              onPublish={() => rootNavigation.navigate('Publish')}
             />
           </ScreenFrame>
         )}
       </ProviderTabs.Screen>
-      <ProviderTabs.Screen name="ExploreTab" options={{ title: 'Explorar' }}>
+      <ProviderTabs.Screen name="ExploreTab" options={{ title: 'Explorar', tabBarIcon: tabIcon('search', 'search-outline') }}>
         {() => <ExploreTabContent rootNavigation={rootNavigation} data={data} />}
       </ProviderTabs.Screen>
-      <ProviderTabs.Screen name="Requests" options={{ title: 'Solicitudes' }}>
+      <ProviderTabs.Screen name="Requests" options={{ title: 'Solicitudes', tabBarIcon: tabIcon('clipboard', 'clipboard-outline') }}>
         {() => <RequestsTabContent rootNavigation={rootNavigation} data={data} />}
       </ProviderTabs.Screen>
-      <ProviderTabs.Screen name="Publish" options={{ title: 'Publicar' }}>
-        {() => (
-          <ScreenFrame onHome={() => rootNavigation.navigate('MainTabs')} onSettings={() => rootNavigation.navigate('Settings')}>
-            <CreatePublicationScreen
-              categories={data.categories}
-              onPublished={() => {
-                void data.loadPublications();
-                rootNavigation.navigate('MainTabs');
-              }}
-            />
-          </ScreenFrame>
-        )}
-      </ProviderTabs.Screen>
-      <ProviderTabs.Screen name="Profile" options={{ title: 'Perfil' }}>
+      <ProviderTabs.Screen name="Profile" options={{ title: 'Perfil', tabBarIcon: tabIcon('person-circle', 'person-circle-outline') }}>
         {() => <ProfileTabContent rootNavigation={rootNavigation} data={data} />}
       </ProviderTabs.Screen>
     </ProviderTabs.Navigator>
   );
 }
 
-const tabIcons: Record<string, { active: keyof typeof Ionicons.glyphMap; inactive: keyof typeof Ionicons.glyphMap }> = {
-  ClientHome: { active: 'home', inactive: 'home-outline' },
-  ProviderHome: { active: 'home', inactive: 'home-outline' },
-  ExploreTab: { active: 'search', inactive: 'search-outline' },
-  Requests: { active: 'clipboard', inactive: 'clipboard-outline' },
-  Publish: { active: 'add-circle', inactive: 'add-circle-outline' },
-  Profile: { active: 'person-circle', inactive: 'person-circle-outline' },
-};
+function tabIcon(active: keyof typeof Ionicons.glyphMap, inactive: keyof typeof Ionicons.glyphMap) {
+  return ({ color, focused, size }: { color: string; focused: boolean; size: number }) => (
+    <Ionicons name={focused ? active : inactive} size={size} color={color} />
+  );
+}
 
 function PremiumTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   const insets = useSafeAreaInsets();
@@ -405,11 +415,11 @@ function PremiumTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
               pressed && styles.pressed,
             ]}
           >
-            <Ionicons
-              name={(focused ? tabIcons[route.name]?.active : tabIcons[route.name]?.inactive) ?? 'ellipse-outline'}
-              size={20}
-              style={[styles.tabIcon, focused && styles.tabIconActive]}
-            />
+            {options.tabBarIcon?.({
+              focused,
+              color: focused ? '#2457ff' : '#98a2b3',
+              size: 20,
+            })}
             <Text style={[styles.tabLabel, focused && styles.tabLabelActive]} numberOfLines={1}>{label}</Text>
           </Pressable>
         );
@@ -459,9 +469,10 @@ function RequestsTabContent({
         role={currentUserType}
         loading={data.requestsLoading}
         error={data.requestsError}
+        onOpenChat={(request) => rootNavigation.navigate('Chat', { request })}
         onEmptyAction={() => {
           if (currentUserType === 'Prestador') {
-            rootNavigation.navigate('MainTabs', { screen: 'Publish' });
+            rootNavigation.navigate('Publish');
             return;
           }
           rootNavigation.navigate('MainTabs', { screen: 'ExploreTab' });
@@ -496,7 +507,7 @@ function ProfileTabContent({
           rootNavigation.navigate('MainTabs', { screen: 'Requests' });
           void data.loadRequests();
         }}
-        onPublish={currentUserType === 'Prestador' ? () => rootNavigation.navigate('MainTabs', { screen: 'Publish' }) : undefined}
+        onPublish={currentUserType === 'Prestador' ? () => rootNavigation.navigate('Publish') : undefined}
       />
     </ScreenFrame>
   );

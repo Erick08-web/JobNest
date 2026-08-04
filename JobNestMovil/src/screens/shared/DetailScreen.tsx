@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { Alert, Image, Text, View } from 'react-native';
+import { Alert, Image, ScrollView, Text, View } from 'react-native';
 import { AuthCard, Badge, Field, PrimaryButton } from '../../components/ui';
 import { sendServiceRequest } from '../../services/requestService';
 import { styles } from '../../styles/theme';
@@ -23,7 +23,11 @@ export function DetailScreen({
 }) {
   const { isLoggedIn, apiFetch, apiUrl, loading, setLoading, user, currentUserType } = useAuth();
   const item = normalizePublication(publication);
-  const imageUrl = buildAbsoluteUrl(apiUrl, item.imagen_principal);
+  const imageUrls = useMemo(() => {
+    const values = item.imagenes?.length ? item.imagenes : item.imagen_principal ? [item.imagen_principal] : [];
+    return values.map((value) => buildAbsoluteUrl(apiUrl, value)).filter(Boolean);
+  }, [apiUrl, item.imagen_principal, item.imagenes]);
+  const imageUrl = imageUrls[0] ?? '';
   const price = formatServicePrice(item);
   const isOwner = currentUserType === 'Prestador' && Boolean(user?.email && item.prestador_email && user.email.toLowerCase() === item.prestador_email.toLowerCase());
   const [imageFailed, setImageFailed] = useState(false);
@@ -98,13 +102,20 @@ export function DetailScreen({
             </View>
           )}
         </View>
+        {imageUrls.length > 1 ? (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.galleryRail} contentContainerStyle={styles.galleryRailContent}>
+            {imageUrls.map((url, index) => (
+              <Image key={`${url}-${index}`} source={{ uri: url }} style={styles.galleryThumb} resizeMode="cover" />
+            ))}
+          </ScrollView>
+        ) : null}
         <Text style={styles.profileName}>{item.titulo}</Text>
         {item.nombre_prestador ? <Text style={styles.profileRole}>{item.nombre_prestador}</Text> : null}
         <View style={styles.metaRow}>
           {item.categoria ? <Badge text={item.categoria} /> : null}
           {item.ubicacion ? <Badge text={item.ubicacion} /> : null}
           {item.disponibilidad ? <Badge text={item.disponibilidad} /> : null}
-          {item.promedio_calificacion ? <Badge text={`${item.promedio_calificacion}`} /> : null}
+          {item.promedio_calificacion ? <Badge text={`${item.promedio_calificacion} · ${item.total_resenas ?? 0} reseñas`} /> : null}
         </View>
       </View>
 
